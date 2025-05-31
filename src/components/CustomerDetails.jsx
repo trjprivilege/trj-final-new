@@ -1,30 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
 import CustomerFilters from './CustomerFilters';
 import CustomerTable from './CustomerTable';
 import { useDebounce } from '../hooks/useDebounce';
-import { searchCustomers } from '../lib/customerQueries';
 
 export default function CustomerDetails() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [eligibleCustomersCount, setEligibleCustomersCount] = useState(0);
   const [totalFilteredCount, setTotalFilteredCount] = useState(0);
+  const [totalStatistics, setTotalStatistics] = useState({
+    totalPoints: 0,
+    totalClaimed: 0,
+    totalUnclaimed: 0
+  });
   const [query, setQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentCustomer, setCurrentCustomer] = useState(null);
   const [isNewCustomer, setIsNewCustomer] = useState(false);
   const [formData, setFormData] = useState({
     customerCode: '',
-    name: '',
+    customerName: '',
     houseName: '',
     street: '',
     place: '',
     pinCode: '',
-    phone: '',
     mobile: '',
-    netWeight: '',
     lastSalesDate: '',
   });
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
@@ -33,6 +35,7 @@ export default function CustomerDetails() {
   const [claimAmount, setClaimAmount] = useState(10);
   const [customerToClaim, setCustomerToClaim] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   // Advanced filtering states
   const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
@@ -73,28 +76,190 @@ export default function CustomerDetails() {
     }
   }
 
-  // Load customers with server-side filtering and pagination
+  // Load customers with server-side filtering and pagination using the new customer_summary view
   async function loadCustomersWithFilters() {
     try {
-      const searchOptions = {
-        searchQuery: debouncedQuery,
-        filters,
-        page: currentPage,
-        limit: itemsPerPage
+      // Build the base query using the new customer_summary view
+      let baseQuery = supabase
+        .from('customer_summary')
+        .select(`
+          "CUSTOMER CODE",
+          "CUSTOMER NAME",
+          "HOUSE NAME",
+          "STREET",
+          "PLACE",
+          "PIN CODE", 
+          "MOBILE",
+          "NET WEIGHT",
+          original_date,
+          parsed_date,
+          total_points,
+          claimed_points,
+          unclaimed_points,
+          points_last_updated
+        `, { count: 'exact' });
+
+      // Function to apply filters to a query
+      const applyFilters = (query) => {
+        // Apply search filters
+        if (debouncedQuery.trim()) {
+          query = query.or(`"CUSTOMER CODE".ilike.%${debouncedQuery}%,"CUSTOMER NAME".ilike.%${debouncedQuery}%,"MOBILE".ilike.%${debouncedQuery}%`);
+        }
+
+        // Apply date range filters
+        if (filters.dateRange.startDate) {
+          query = query.gte('parsed_date', filters.dateRange.startDate);
+        }
+        if (filters.dateRange.endDate) {
+          query = query.lte('parsed_date', filters.dateRange.endDate);
+        }
+
+        // Apply points filters
+        if (filters.points.minTotal) {
+          query = query.gte('total_points', parseInt(filters.points.minTotal));
+        }
+        if (filters.points.maxTotal) {
+          query = query.lte('total_points', parseInt(filters.points.maxTotal));
+        }
+        if (filters.points.minClaimed) {
+          query = query.gte('claimed_points', parseInt(filters.points.minClaimed));
+        }
+        if (filters.points.maxClaimed) {
+          query = query.lte('claimed_points', parseInt(filters.points.maxClaimed));
+        }
+        if (filters.points.minUnclaimed) {
+          query = query.gte('unclaimed_points', parseInt(filters.points.minUnclaimed));
+        }
+        if (filters.points.maxUnclaimed) {
+          query = query.lte('unclaimed_points', parseInt(filters.points.maxUnclaimed));
+        }
+
+        // Apply claim status filters
+        if (filters.claimStatus.hasClaimed) {
+          query = query.gt('claimed_points', 0);
+        }
+        if (filters.claimStatus.hasEligibleClaims) {
+          query = query.gte('unclaimed_points', 10);
+        }
+
+        return query;
       };
 
-      const result = await searchCustomers(searchOptions);
+      // Apply filters to the main query
+      baseQuery = applyFilters(baseQuery);
+
+      // Apply pagination to the main query
+      const from = (currentPage - 1) * itemsPerPage;
+      const to = from + itemsPerPage - 1;
       
-      setRows(result.data);
-      setTotalPages(result.totalPages);
-      setTotalFilteredCount(result.totalCount);
-      setEligibleCustomersCount(result.eligibleCount);
+      const mainQuery = baseQuery.range(from, to).order('"CUSTOMER CODE"', { ascending: true });
+
+      // Execute the main query
+      const { data, error, count } = await mainQuery;
+      
+      if (error) throw error;
+
+      // Create a separate query to count eligible customers (unclaimed_points >= 10) with the same filters
+      let eligibleQuery = supabase
+        .from('customer_summary')
+        .select('"CUSTOMER CODE"', { count: 'exact', head: true })
+        .gte('unclaimed_points', 10);
+
+      // Apply the same filters to the eligible count query
+      eligibleQuery = applyFilters(eligibleQuery);
+
+      // Execute the eligible count query
+      const { count: eligibleCount, error: eligibleError } = await eligibleQuery;
+      
+      if (eligibleError) throw eligibleError;
+
+      // Create a query to get all points data with the same filters (no pagination) for statistics
+      let statsQuery = supabase
+        .from('customer_summary')
+        .select(`
+          total_points,
+          claimed_points,
+          unclaimed_points
+        `);
+
+      // Apply the same filters to the statistics query
+      statsQuery = applyFilters(statsQuery);
+
+      // Execute the statistics query without pagination to get all filtered records
+      const { data: statsData, error: statsError } = await statsQuery;
+      
+      if (statsError) throw statsError;
+
+      // Calculate statistics from the filtered data
+      let totalPoints = 0;
+      let totalClaimed = 0;
+      let totalUnclaimed = 0;
+
+      if (statsData && statsData.length > 0) {
+        statsData.forEach(row => {
+          totalPoints += row.total_points || 0;
+          totalClaimed += row.claimed_points || 0;
+          totalUnclaimed += row.unclaimed_points || 0;
+        });
+      }
+
+      setTotalStatistics({
+        totalPoints,
+        totalClaimed,
+        totalUnclaimed
+      });
+
+      // Transform data to match existing component expectations
+      const transformedData = data.map(row => ({
+        code: row["CUSTOMER CODE"],
+        name: row["CUSTOMER NAME"],
+        houseName: row["HOUSE NAME"],
+        street: row["STREET"],
+        place: row["PLACE"],
+        pinCode: row["PIN CODE"],
+        mobile: row["MOBILE"],
+        netWeight: row["NET WEIGHT"],
+        lastSalesDate: row.original_date,
+        parsedDate: row.parsed_date,
+        total: row.total_points || 0,
+        claimed: row.claimed_points || 0,
+        unclaimed: row.unclaimed_points || 0,
+        lastUpdated: row.points_last_updated
+      }));
+
+      setRows(transformedData);
+      setTotalFilteredCount(count || 0);
+      setTotalPages(Math.ceil((count || 0) / itemsPerPage));
+      
+      // Set the eligible customers count from the database query
+      setEligibleCustomersCount(eligibleCount || 0);
       
     } catch (error) {
       console.error('Error loading customers:', error);
       throw error;
     }
   }
+
+  // Function to refresh points manually
+  const handleRefreshPoints = async () => {
+    setIsRefreshing(true);
+    try {
+      const { data: pointsResult, error: pointsError } = await supabase.rpc('refresh_customer_points');
+      if (pointsError) throw pointsError;
+
+      const { data: datesResult, error: datesError } = await supabase.rpc('update_parsed_dates');
+      if (datesError) throw datesError;
+
+      await loadData(); // Reload the data
+      setErrorMessage(`✅ ${pointsResult} ${datesResult}`);
+      setTimeout(() => setErrorMessage(''), 5000);
+    } catch (error) {
+      console.error('Error refreshing points:', error);
+      setErrorMessage(`❌ Failed to refresh points: ${error.message}`);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   // Debounce search query to prevent excessive API calls
   const debouncedQuery = useDebounce(query, 500);
@@ -108,11 +273,6 @@ export default function CustomerDetails() {
   useEffect(() => {
     setCurrentPage(1);
   }, [debouncedQuery, filters, itemsPerPage]);
-  
-  // Update total filtered count when rows change
-  useEffect(() => {
-    setTotalFilteredCount(rows.length * totalPages); // Approximate total based on current page
-  }, [rows, totalPages]);
   
   // Handle filter changes
   const handleFilterChange = (category, field, value) => {
@@ -145,14 +305,12 @@ export default function CustomerDetails() {
     setCurrentCustomer(customer);
     setFormData({
       customerCode: customer.code,
-      name: customer.name || '',
+      customerName: customer.name || '',
       houseName: customer.houseName || '',
       street: customer.street || '',
       place: customer.place || '',
       pinCode: customer.pinCode || '',
-      phone: customer.phone || '',
       mobile: customer.mobile || '',
-      netWeight: customer.netWeight || '',
       lastSalesDate: customer.lastSalesDate || '',
     });
     setIsModalOpen(true);
@@ -163,14 +321,12 @@ export default function CustomerDetails() {
     setCurrentCustomer(null);
     setFormData({
       customerCode: '',
-      name: '',
+      customerName: '',
       houseName: '',
       street: '',
       place: '',
       pinCode: '',
-      phone: '',
       mobile: '',
-      netWeight: '',
       lastSalesDate: '',
     });
     setIsModalOpen(true);
@@ -183,7 +339,7 @@ export default function CustomerDetails() {
 
   const handleClaimClick = (customer) => {
     setCustomerToClaim(customer);
-    setClaimAmount(10); // Default claim amount
+    setClaimAmount(Math.min(10, customer.unclaimed)); // Default to available unclaimed or 10
     setIsClaimModalOpen(true);
   };
 
@@ -197,189 +353,143 @@ export default function CustomerDetails() {
       }
 
       const customerData = {
-        'CUSTOMER CODE': formData.customerCode,
-        'NAME1 & 2': formData.name,
-        'HOUSE NAME': formData.houseName,
-        'STREET': formData.street,
-        'PLACE': formData.place,
-        'PIN CODE': formData.pinCode,
-        'PHONE': formData.phone,
-        'MOBILE': formData.mobile,
-        'NET WEIGHT': formData.netWeight ? parseFloat(formData.netWeight) : null,
-        'LAST SALES DATE': formData.lastSalesDate,
+        "CUSTOMER CODE": formData.customerCode.trim(),
+        "CUSTOMER NAME": formData.customerName.trim(),
+        "HOUSE NAME": formData.houseName.trim(),
+        "STREET": formData.street.trim(),
+        "PLACE": formData.place.trim(),
+        "PIN CODE": formData.pinCode.trim(),
+        "MOBILE": formData.mobile.trim(),
+        "NET WEIGHT": isNewCustomer ? 0 : (currentCustomer?.netWeight || 0), // Preserve existing weight or set to 0 for new customers
+        "LAST SALES DATE": formData.lastSalesDate || null,
       };
 
       if (isNewCustomer) {
-        // Insert new customer
-        const { data, error } = await supabase
+        const { error } = await supabase
           .from('sales_records')
-          .insert([customerData])
-          .select();
+          .insert([customerData]);
 
         if (error) throw error;
-        
-        // Update local state for new customer
-        if (data && data.length > 0) {
-          // Also create a points record for the new customer
-          const { error: pointsError } = await supabase
-            .from('customer_points')
-            .insert([{
-              'CUSTOMER_CODE': formData.customerCode,
-              'TOTAL_POINTS': 0,
-              'CLAIMED_POINTS': 0,
-              'UNCLAIMED_POINTS': 0,
-              'LAST_UPDATED': new Date().toISOString()
-            }]);
-            
-          if (pointsError) throw pointsError;
-          
-          // Reload data to reflect changes
-          await loadData();
-        }
       } else {
-        // Update existing customer
         const { error } = await supabase
           .from('sales_records')
           .update(customerData)
-          .eq('CUSTOMER CODE', formData.customerCode);
+          .eq('"CUSTOMER CODE"', currentCustomer.code);
 
         if (error) throw error;
-        
-        // Reload data to reflect changes
-        await loadData();
       }
 
+      // Refresh points after customer data change
+      await handleRefreshPoints();
+
       setIsModalOpen(false);
+      await loadData();
     } catch (error) {
       console.error('Error saving customer:', error);
-      setErrorMessage(error.message || 'Failed to save customer data');
+      setErrorMessage('Failed to save customer: ' + error.message);
     }
   };
 
   const handleDeleteCustomer = async () => {
-    if (!customerToDelete) return;
-    
     try {
-      // Delete from sales_records
-      const { error: salesError } = await supabase
+      setErrorMessage('');
+      
+      const { error } = await supabase
         .from('sales_records')
         .delete()
-        .eq('CUSTOMER CODE', customerToDelete.code);
-
-      if (salesError) throw salesError;
+        .eq('"CUSTOMER CODE"', customerToDelete.code);
       
-      // Delete from customer_points
-      const { error: pointsError } = await supabase
-        .from('customer_points')
-        .delete()
-        .eq('CUSTOMER_CODE', customerToDelete.code);
-        
-      if (pointsError) throw pointsError;
-      
-      // Reload data to reflect changes
-      await loadData();
+      if (error) throw error;
       
       setIsDeleteConfirmOpen(false);
       setCustomerToDelete(null);
+      await loadData();
     } catch (error) {
       console.error('Error deleting customer:', error);
-      setErrorMessage('Failed to delete customer. Please try again.');
+      setErrorMessage('Failed to delete customer: ' + error.message);
     }
   };
 
   const handleClaimPoints = async () => {
-    if (!customerToClaim) return;
-    
     try {
-      // Get current points for customer
-      const { data, error: fetchError } = await supabase
-        .from('customer_points')
-        .select('CLAIMED_POINTS, TOTAL_POINTS')
-        .eq('CUSTOMER_CODE', customerToClaim.code)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      if (!data) {
-        throw new Error('Customer points record not found');
-      }
-
-      // Check if customer has enough unclaimed points
-      const unclaimed = data.TOTAL_POINTS - data.CLAIMED_POINTS;
-      if (unclaimed < claimAmount) {
-        setErrorMessage(`Customer only has ${unclaimed} points available to claim`);
+      setErrorMessage('');
+      
+      if (!claimAmount || claimAmount <= 0) {
+        setErrorMessage('Please enter a valid claim amount');
         return;
       }
 
-      const newClaimedPoints = data.CLAIMED_POINTS + parseInt(claimAmount);
+      if (claimAmount > customerToClaim.unclaimed) {
+        setErrorMessage(`Cannot claim ${claimAmount} points. Only ${customerToClaim.unclaimed} points available.`);
+        return;
+      }
+
+      // Use the new claim_customer_points function
+      const { data: result, error } = await supabase.rpc('claim_customer_points', {
+        customer_code: customerToClaim.code,
+        points_to_claim: claimAmount
+      });
       
-      // Update only the CLAIMED_POINTS column, not UNCLAIMED_POINTS which is a generated column
-      const { error: updateError } = await supabase
-        .from('customer_points')
-        .update({
-          'CLAIMED_POINTS': newClaimedPoints,
-          'LAST_UPDATED': new Date().toISOString()
-        })
-        .eq('CUSTOMER_CODE', customerToClaim.code);
-
-      if (updateError) throw updateError;
-
-      // Fetch the updated record to get the new UNCLAIMED_POINTS value
-      const { data: updatedData, error: fetchUpdatedError } = await supabase
-        .from('customer_points')
-        .select('CLAIMED_POINTS, UNCLAIMED_POINTS')
-        .eq('CUSTOMER_CODE', customerToClaim.code)
-        .single();
-        
-      if (fetchUpdatedError) throw fetchUpdatedError;
-
-      // Reload data to reflect changes
-      await loadData();
+      if (error) throw error;
 
       setIsClaimModalOpen(false);
       setCustomerToClaim(null);
+      setClaimAmount(10);
+      
+      // Show success message
+      setErrorMessage(`✅ ${result}`);
+      setTimeout(() => setErrorMessage(''), 5000);
+      
+      await loadData();
     } catch (error) {
       console.error('Error claiming points:', error);
-      setErrorMessage('Failed to claim points. Please try again.');
+      setErrorMessage('Failed to claim points: ' + error.message);
     }
   };
 
   return (
-    <div className="bg-white p-6 rounded-lg shadow-md overflow-x-auto">
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-xl font-semibold">Customer Management</h2>
-        {/* Add Customer button temporarily hidden
+    <div className="space-y-6">
+      {/* Header with Add Customer and Refresh Points buttons */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <h1 className="text-2xl font-bold text-gray-800">Customer Management</h1>
+        <div className="flex gap-2">
         <button 
-          onClick={handleAddNewCustomer}
-          className="bg-green-500 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-green-600"
+            onClick={handleRefreshPoints}
+            disabled={isRefreshing}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 disabled:opacity-50"
         >
-          <Plus size={16} /> Add Customer
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            {isRefreshing ? 'Refreshing...' : 'Refresh Points'}
         </button>
-        */}
-      </div>
-
-      {errorMessage && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-          {errorMessage}
           <button 
-            className="float-right font-bold"
-            onClick={() => setErrorMessage('')}
+            onClick={handleAddNewCustomer}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
           >
-            &times;
+            <Plus className="w-4 h-4" />
+            Add Customer
           </button>
         </div>
-      )}
+      </div>
 
-      {loading && (
-        <div className="mb-6 p-4 bg-blue-50 rounded-lg">
-          <div className="flex items-center justify-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-3"></div>
-            <span className="text-blue-800">Loading customer data...</span>
-          </div>
+      {/* Error/Success Messages */}
+      {errorMessage && (
+        <div className={`p-4 rounded-md ${
+          errorMessage.startsWith('✅') 
+            ? 'bg-green-50 border border-green-200 text-green-700' 
+            : 'bg-red-50 border border-red-200 text-red-700'
+        }`}>
+          <p className="flex items-start">
+            {errorMessage.startsWith('✅') ? (
+              <CheckCircle className="w-5 h-5 mr-2 mt-0.5 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="w-5 h-5 mr-2 mt-0.5 flex-shrink-0" />
+            )}
+            {errorMessage}
+          </p>
         </div>
       )}
 
-      {/* Filter Component */}
+      {/* Filters */}
       <CustomerFilters
         query={query}
         setQuery={setQuery}
@@ -390,7 +500,7 @@ export default function CustomerDetails() {
         setIsFilterPanelOpen={setIsFilterPanelOpen}
       />
 
-      {/* Table Component */}
+      {/* Customer Table */}
       <CustomerTable
         filtered={rows}
         loading={loading}
@@ -404,25 +514,30 @@ export default function CustomerDetails() {
         handleDeleteClick={handleDeleteClick}
         totalFilteredCount={totalFilteredCount}
         eligibleCustomersCount={eligibleCustomersCount}
+        totalStatistics={totalStatistics}
       />
 
-      {/* Edit/Add Customer Modal */}
+      {/* Customer Form Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center p-6 border-b">
+              <h2 className="text-xl font-semibold">
                 {isNewCustomer ? 'Add New Customer' : 'Edit Customer'}
-              </h3>
-              <button className="text-gray-500 hover:text-gray-700" onClick={() => setIsModalOpen(false)}>
-                <X size={20} />
+              </h2>
+              <button
+                onClick={() => setIsModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
               </button>
             </div>
             
-            <div className="grid grid-cols-2 gap-4">
-              <div className="col-span-1">
+            <div className="p-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Customer Code*
+                    Customer Code *
                 </label>
                 <input
                   type="text"
@@ -430,25 +545,25 @@ export default function CustomerDetails() {
                   value={formData.customerCode}
                   onChange={handleInputChange}
                   disabled={!isNewCustomer}
-                  className={`w-full p-2 border rounded ${!isNewCustomer ? "bg-gray-100" : ""}`}
+                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
                   required
                 />
               </div>
               
-              <div className="col-span-1">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Name
+                    Customer Name
                 </label>
                 <input
                   type="text"
-                  name="name"
-                  value={formData.name}
+                    name="customerName"
+                    value={formData.customerName}
                   onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
+                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               
-              <div className="col-span-1">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   House Name
                 </label>
@@ -457,11 +572,11 @@ export default function CustomerDetails() {
                   name="houseName"
                   value={formData.houseName}
                   onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
+                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               
-              <div className="col-span-1">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Street
                 </label>
@@ -470,11 +585,11 @@ export default function CustomerDetails() {
                   name="street"
                   value={formData.street}
                   onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
+                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               
-              <div className="col-span-1">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Place
                 </label>
@@ -483,11 +598,11 @@ export default function CustomerDetails() {
                   name="place"
                   value={formData.place}
                   onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
+                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               
-              <div className="col-span-1">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   PIN Code
                 </label>
@@ -496,24 +611,11 @@ export default function CustomerDetails() {
                   name="pinCode"
                   value={formData.pinCode}
                   onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
+                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               
-              <div className="col-span-1">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Phone
-                </label>
-                <input
-                  type="text"
-                  name="phone"
-                  value={formData.phone}
-                  onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
-                />
-              </div>
-              
-              <div className="col-span-1">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Mobile
                 </label>
@@ -522,53 +624,38 @@ export default function CustomerDetails() {
                   name="mobile"
                   value={formData.mobile}
                   onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
+                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               
-              <div className="col-span-1">
+                <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Net Weight
+                    Last Sales Date (DD/MM/YYYY)
                 </label>
                 <input
-                  type="number"
-                  name="netWeight"
-                  value={formData.netWeight}
-                  onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
-                />
-              </div>
-              
-              <div className="col-span-1">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Last Sales Date
-                </label>
-                <input
-                  type="date"
+                    type="text"
                   name="lastSalesDate"
                   value={formData.lastSalesDate}
                   onChange={handleInputChange}
-                  className="w-full p-2 border rounded"
+                    placeholder="31/12/2023"
+                    className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+                </div>
               </div>
             </div>
             
-            {errorMessage && (
-              <div className="mt-4 text-red-600 text-sm">{errorMessage}</div>
-            )}
-            
-            <div className="mt-6 flex justify-end gap-2">
+            <div className="flex justify-end gap-3 p-6 border-t">
               <button
                 onClick={() => setIsModalOpen(false)}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                className="px-4 py-2 text-gray-600 border rounded-md hover:bg-gray-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSaveCustomer}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
-                Save
+                {isNewCustomer ? 'Add Customer' : 'Save Changes'}
               </button>
             </div>
           </div>
@@ -576,44 +663,59 @@ export default function CustomerDetails() {
       )}
 
       {/* Delete Confirmation Modal */}
-      {isDeleteConfirmOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-md">
-            <h3 className="text-lg font-semibold mb-4">Confirm Delete</h3>
-            <p className="mb-6">
-              Are you sure you want to delete customer "{customerToDelete?.name}" ({customerToDelete?.code})? 
-              This action cannot be undone.
-            </p>
-            
-            <div className="flex justify-end gap-2">
+      {isDeleteConfirmOpen && customerToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                Confirm Delete
+              </h3>
+              <p className="text-gray-600 mb-4">
+                Are you sure you want to delete customer{' '}
+                <span className="font-medium">{customerToDelete.name}</span> (Code:{' '}
+                <span className="font-medium">{customerToDelete.code}</span>)?
+              </p>
+              <p className="text-sm text-red-600 mb-4">
+                This action cannot be undone and will remove all associated points data.
+              </p>
+              <div className="flex justify-end gap-3">
               <button
                 onClick={() => setIsDeleteConfirmOpen(false)}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                  className="px-4 py-2 text-gray-600 border rounded-md hover:bg-gray-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleDeleteCustomer}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+                  className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
               >
-                Delete
+                  Delete Customer
               </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {/* Claim Points Modal */}
-      {isClaimModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-md">
-            <h3 className="text-lg font-semibold mb-4">Claim Points</h3>
-            <p className="mb-4">
-              Customer: <strong>{customerToClaim?.name}</strong> ({customerToClaim?.code})
-            </p>
-            <p className="mb-4">
-              Available Points: <strong>{customerToClaim?.unclaimed}</strong>
-            </p>
+      {isClaimModalOpen && customerToClaim && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                Claim Loyalty Points
+              </h3>
+              <div className="mb-4">
+                <p className="text-gray-600">
+                  Customer: <span className="font-medium">{customerToClaim.name}</span>
+                </p>
+                <p className="text-gray-600">
+                  Code: <span className="font-medium">{customerToClaim.code}</span>
+                </p>
+                <p className="text-green-600 font-medium">
+                  Available Points: {customerToClaim.unclaimed}
+                </p>
+              </div>
             
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -621,40 +723,36 @@ export default function CustomerDetails() {
               </label>
               <input
                 type="number"
+                  min="1"
+                  max={customerToClaim.unclaimed}
                 value={claimAmount}
-                onChange={(e) => setClaimAmount(e.target.value)}
-                min="1"
-                max={customerToClaim?.unclaimed}
-                className="w-full p-2 border rounded"
-              />
+                  onChange={(e) => setClaimAmount(parseInt(e.target.value) || 0)}
+                  className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Minimum claim: 1 point | Maximum: {customerToClaim.unclaimed} points
+                </p>
             </div>
             
-            {errorMessage && (
-              <div className="mt-2 text-red-600 text-sm">{errorMessage}</div>
-            )}
-            
-            <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-3">
               <button
-                onClick={() => {
-                  setIsClaimModalOpen(false);
-                  setErrorMessage('');
-                }}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                  onClick={() => setIsClaimModalOpen(false)}
+                  className="px-4 py-2 text-gray-600 border rounded-md hover:bg-gray-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleClaimPoints}
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                  disabled={!claimAmount || claimAmount > customerToClaim.unclaimed}
+                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Claim
+                  Claim {claimAmount} Points
               </button>
+              </div>
             </div>
           </div>
         </div>
       )}
-      
-
     </div>
   );
 }
