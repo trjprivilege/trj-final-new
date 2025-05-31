@@ -16,24 +16,24 @@ export default function CustomerTable({
   handleClaimClick,
   handleDeleteClick,
   totalFilteredCount,
-  eligibleCustomersCount
+  eligibleCustomersCount,
+  totalStatistics = { totalPoints: 0, totalClaimed: 0, totalUnclaimed: 0 }
 }) {
   // Function to export data to CSV
   const exportToCSV = () => {
     const csvData = filtered.map(customer => ({
       'Customer Code': customer.code,
-      'Name': customer.name,
+      'Customer Name': customer.name,
       'House Name': customer.houseName,
       'Street': customer.street,
       'Place': customer.place,
       'PIN Code': customer.pinCode,
-      'Phone': customer.phone,
       'Mobile': customer.mobile,
-      'Net Weight': customer.netWeight,
       'Last Sales Date': customer.lastSalesDate,
       'Total Points': customer.total,
       'Claimed Points': customer.claimed,
-      'Unclaimed Points': customer.unclaimed
+      'Unclaimed Points': customer.unclaimed,
+      'Last Updated': customer.lastUpdated
     }));
 
     const csv = Papa.unparse(csvData);
@@ -41,7 +41,7 @@ export default function CustomerTable({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', 'customer_data.csv');
+    link.setAttribute('download', `customer_loyalty_data_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -54,51 +54,70 @@ export default function CustomerTable({
     printWindow.document.write(`
       <html>
         <head>
-          <title>Customer List</title>
+          <title>Customer Loyalty Program - Report</title>
           <style>
-            body { font-family: Arial, sans-serif; }
-            table { border-collapse: collapse; width: 100%; }
-            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-            th { background-color: #f2f2f2; }
+            body { font-family: Arial, sans-serif; margin: 0; padding: 15px; }
+            table { border-collapse: collapse; width: 100%; font-size: 12px; }
+            th, td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+            th { background-color: #f2f2f2; font-weight: bold; }
             .header { text-align: center; margin-bottom: 20px; }
+            .summary { margin-bottom: 20px; }
             @media print {
               .no-print { display: none; }
-              body { margin: 0; padding: 15px; }
             }
           </style>
         </head>
         <body>
           <div class="header">
-            <h1>Customer List</h1>
-            <p>Generated on ${new Date().toLocaleDateString()}</p>
+            <h1>Customer Loyalty Program Report</h1>
+            <p>Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
           </div>
+          
+          <div class="summary">
+            <p><strong>Total Customers:</strong> ${totalFilteredCount}</p>
+            <p><strong>Eligible for Claims (≥10 points):</strong> ${eligibleCustomersCount}</p>
+            <p><strong>Total Points Issued:</strong> ${totalStatistics.totalPoints}</p>
+            <p><strong>Total Points Claimed:</strong> ${totalStatistics.totalClaimed}</p>
+            <p><strong>Total Points Available:</strong> ${totalStatistics.totalUnclaimed}</p>
+          </div>
+          
           <div class="no-print" style="margin-bottom: 20px; text-align: center;">
-            <button onclick="window.print()">Print</button>
+            <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px;">Print Report</button>
           </div>
+          
           <table>
             <thead>
               <tr>
                 <th>Code</th>
-                <th>Name</th>
+                <th>Customer Name</th>
+                <th>Place</th>
                 <th>Mobile</th>
                 <th>Total Points</th>
                 <th>Claimed</th>
                 <th>Unclaimed</th>
+                <th>Last Sales Date</th>
               </tr>
             </thead>
             <tbody>
               ${filtered.map(customer => `
                 <tr>
-                  <td>${customer.code}</td>
+                  <td>${customer.code || ''}</td>
                   <td>${customer.name || ''}</td>
+                  <td>${customer.place || ''}</td>
                   <td>${customer.mobile || ''}</td>
-                  <td>${customer.total}</td>
-                  <td>${customer.claimed}</td>
-                  <td>${customer.unclaimed}</td>
+                  <td>${customer.total || 0}</td>
+                  <td>${customer.claimed || 0}</td>
+                  <td>${customer.unclaimed || 0}</td>
+                  <td>${customer.lastSalesDate || ''}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
+          
+          <div style="margin-top: 20px; font-size: 10px; color: #666;">
+            <p>Points Formula: 1 point per 10 grams of gold weight</p>
+            <p>Report generated from Customer Loyalty Management System</p>
+          </div>
         </body>
       </html>
     `);
@@ -127,23 +146,28 @@ export default function CustomerTable({
             className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 text-sm"
           >
             <FileText size={16} />
-            <span className="hidden sm:inline">Print List</span>
+            <span className="hidden sm:inline">Print Report</span>
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 rounded-xl shadow-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 rounded-xl shadow-sm">
         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
           <h4 className="text-sm text-gray-500">Total Customers</h4>
           <p className="text-2xl font-semibold">{totalFilteredCount}</p>
         </div>
         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-          <h4 className="text-sm text-gray-500">Filtered Results</h4>
+          <h4 className="text-sm text-gray-500">Showing Results</h4>
           <p className="text-2xl font-semibold">{filtered.length} <span className="text-sm text-gray-500">of {totalFilteredCount}</span></p>
         </div>
         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-          <h4 className="text-sm text-gray-500">Eligible for Claims (≥10 points)</h4>
-          <p className="text-2xl font-semibold">{eligibleCustomersCount}</p>
+          <h4 className="text-sm text-gray-500">Eligible for Claims</h4>
+          <p className="text-2xl font-semibold text-green-600">{eligibleCustomersCount}</p>
+          <p className="text-xs text-gray-500">≥10 points</p>
+        </div>
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+          <h4 className="text-sm text-gray-500">Total Available Points</h4>
+          <p className="text-2xl font-semibold text-blue-600">{totalStatistics.totalUnclaimed}</p>
         </div>
       </div>
 
@@ -155,9 +179,8 @@ export default function CustomerTable({
               <th className="px-3 py-2 text-left font-medium text-gray-700">#</th>
               <th className="px-3 py-2 text-left font-medium text-gray-700">Code</th>
               <th className="px-3 py-2 text-left font-medium text-gray-700">Name</th>
-              <th className="px-3 py-2 text-left font-medium text-gray-700">Phone</th>
+              <th className="px-3 py-2 text-left font-medium text-gray-700">Place</th>
               <th className="px-3 py-2 text-left font-medium text-gray-700">Mobile</th>
-              <th className="px-3 py-2 text-left font-medium text-gray-700">Last Sales Date</th>
               <th className="px-3 py-2 text-left font-medium text-gray-700">Total Points</th>
               <th className="px-3 py-2 text-left font-medium text-gray-700">Claimed</th>
               <th className="px-3 py-2 text-left font-medium text-gray-700">Unclaimed</th>
@@ -168,47 +191,54 @@ export default function CustomerTable({
             {loading ? (
               <tr>
                 <td colSpan="9" className="py-6 text-center text-gray-500">
-                  Loading...
+                  <div className="flex items-center justify-center">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mr-2"></div>
+                    Loading customers...
+                  </div>
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
                 <td colSpan="9" className="py-6 text-center text-gray-500">
-                  No customers found.
+                  No customers found matching your criteria.
                 </td>
               </tr>
             ) : (
               filtered.map((customer, index) => (
                 <tr key={customer.code} className="hover:bg-gray-50">
                   <td className="px-3 py-2 whitespace-nowrap text-gray-500">{(currentPage - 1) * itemsPerPage + index + 1}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{customer.code}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{customer.name}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{customer.phone}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{customer.mobile}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{customer.lastSalesDate}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{customer.total}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{customer.claimed}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{customer.unclaimed}</td>
+                  <td className="px-3 py-2 whitespace-nowrap font-medium">{customer.code}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{customer.name || '-'}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{customer.place || '-'}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{customer.mobile || '-'}</td>
+                  <td className="px-3 py-2 whitespace-nowrap font-medium">{customer.total || 0}</td>
+                  <td className="px-3 py-2 whitespace-nowrap text-blue-600">{customer.claimed || 0}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <span className={`font-medium ${(customer.unclaimed || 0) >= 10 ? 'text-green-600' : 'text-gray-600'}`}>
+                      {customer.unclaimed || 0}
+                    </span>
+                  </td>
                   <td className="px-3 py-2 whitespace-nowrap flex gap-2">
                     <button 
                       onClick={() => handleEditCustomer(customer)}
                       className="p-1 text-blue-600 hover:text-blue-800" 
-                      title="Edit"
+                      title="Edit Customer"
                     >
                       <Edit size={16} />
                     </button>
-                    <button 
-                      onClick={() => handleClaimClick(customer)}
-                      className="p-1 text-green-600 hover:text-green-800" 
-                      title="Claim Points"
-                      disabled={customer.unclaimed < 10}
-                    >
-                      <Award size={16} className={customer.unclaimed < 10 ? "opacity-50" : ""} />
-                    </button>
+                    {(customer.unclaimed || 0) >= 10 && (
+                      <button 
+                        onClick={() => handleClaimClick(customer)}
+                        className="p-1 text-green-600 hover:text-green-800" 
+                        title="Claim Points"
+                      >
+                        <Award size={16} />
+                      </button>
+                    )}
                     <button 
                       onClick={() => handleDeleteClick(customer)}
                       className="p-1 text-red-600 hover:text-red-800" 
-                      title="Delete"
+                      title="Delete Customer"
                     >
                       <Trash size={16} />
                     </button>
@@ -220,131 +250,146 @@ export default function CustomerTable({
         </table>
       </div>
 
-      {/* Mobile View */}
-      <div className="md:hidden">
+      {/* Mobile Cards */}
+      <div className="block md:hidden space-y-4">
         {loading ? (
-          <div className="py-6 text-center text-gray-500">Loading...</div>
+          <div className="flex items-center justify-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-3"></div>
+            <span className="text-gray-500">Loading customers...</span>
+          </div>
         ) : filtered.length === 0 ? (
-          <div className="py-6 text-center text-gray-500">No customers found.</div>
+          <div className="text-center py-8 text-gray-500">
+            No customers found matching your criteria.
+          </div>
         ) : (
-          <div className="space-y-3">
-            {filtered.map((customer) => (
-              <div key={customer.code} className="bg-white border rounded-lg p-4 shadow-sm">
-                <div className="flex justify-between">
-                  <div>
-                    <h3 className="font-medium">{customer.name}</h3>
-                    <p className="text-sm text-gray-500">{customer.code}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-medium">{customer.mobile}</p>
-                    <p className="text-xs text-gray-500">{customer.phone}</p>
-                  </div>
+          filtered.map((customer, index) => (
+            <div key={customer.code} className="bg-white border rounded-lg p-4 shadow-sm">
+              <div className="flex justify-between items-start mb-3">
+                <div>
+                  <h3 className="text-base font-semibold">{customer.name || 'Unnamed Customer'}</h3>
+                  <p className="text-sm text-gray-500">{customer.code}</p>
+                  <p className="text-xs text-gray-400">{customer.place || ''} • {customer.mobile || ''}</p>
                 </div>
-                
-                <div className="mt-2">
-                  <p className="text-xs text-gray-500">Last Sales Date</p>
-                  <p className="text-sm font-medium">{customer.lastSalesDate}</p>
+                <div className="flex items-center gap-1">
+                  {(customer.unclaimed || 0) >= 10 && (
+                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                      <Award className="w-3 h-3 mr-1" />
+                      Eligible
+                    </span>
+                  )}
                 </div>
-                
-                <div className="grid grid-cols-3 gap-2 mt-3 text-sm">
-                  <div>
-                    <p className="text-gray-500 text-xs">Total</p>
-                    <p className="font-medium">{customer.total}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500 text-xs">Claimed</p>
-                    <p className="font-medium">{customer.claimed}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500 text-xs">Unclaimed</p>
-                    <p className="font-medium">{customer.unclaimed}</p>
-                  </div>
+              </div>
+              
+              <div className="grid grid-cols-3 gap-3 text-sm mb-3">
+                <div>
+                  <p className="text-gray-500">Total Points</p>
+                  <p className="font-medium">{customer.total || 0}</p>
                 </div>
-                
-                <div className="flex justify-end gap-2 mt-3">
-                  <button 
+                <div>
+                  <p className="text-gray-500">Claimed</p>
+                  <p className="font-medium text-blue-600">{customer.claimed || 0}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Unclaimed</p>
+                  <p className={`font-medium ${(customer.unclaimed || 0) >= 10 ? 'text-green-600' : 'text-gray-600'}`}>
+                    {customer.unclaimed || 0}
+                  </p>
+                </div>
+              </div>
+              
+              <div className="flex justify-between items-center">
+                <div className="text-xs text-gray-500">
+                  Last Sale: {customer.lastSalesDate || 'N/A'}
+                </div>
+                <div className="flex gap-2">
+                  <button
                     onClick={() => handleEditCustomer(customer)}
-                    className="p-1.5 text-blue-600 hover:text-blue-800 bg-blue-50 rounded-full" 
+                    className="p-2 text-blue-600 hover:bg-blue-50 rounded"
+                    title="Edit"
                   >
-                    <Edit size={16} />
+                    <Edit className="w-4 h-4" />
                   </button>
-                  <button 
-                    onClick={() => handleClaimClick(customer)}
-                    className="p-1.5 text-green-600 hover:text-green-800 bg-green-50 rounded-full" 
-                    disabled={customer.unclaimed < 10}
-                  >
-                    <Award size={16} className={customer.unclaimed < 10 ? "opacity-50" : ""} />
-                  </button>
-                  <button 
+                  {(customer.unclaimed || 0) >= 10 && (
+                    <button
+                      onClick={() => handleClaimClick(customer)}
+                      className="p-2 text-green-600 hover:bg-green-50 rounded"
+                      title="Claim Points"
+                    >
+                      <Award className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button
                     onClick={() => handleDeleteClick(customer)}
-                    className="p-1.5 text-red-600 hover:text-red-800 bg-red-50 rounded-full" 
+                    className="p-2 text-red-600 hover:bg-red-50 rounded"
+                    title="Delete"
                   >
-                    <Trash size={16} />
+                    <Trash className="w-4 h-4" />
                   </button>
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
+          ))
         )}
       </div>
 
-      {/* Pagination Controls */}
-      <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mt-4 bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-        <div className="flex items-center gap-4 w-full sm:w-auto">
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="mt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600">Show:</label>
+            <span className="text-sm text-gray-600">Show</span>
             <select
               value={itemsPerPage}
               onChange={(e) => setItemsPerPage(Number(e.target.value))}
-              className="border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="border rounded px-2 py-1 text-sm"
             >
               {pageSizeOptions.map(size => (
                 <option key={size} value={size}>{size}</option>
               ))}
             </select>
+            <span className="text-sm text-gray-600">per page</span>
           </div>
-          <span className="text-sm text-gray-600">
-            Showing {filtered.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0} to {Math.min(currentPage * itemsPerPage, totalFilteredCount)} of {totalFilteredCount} entries
-          </span>
+          
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage === 1}
+              className="p-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="First page"
+            >
+              <ChevronsLeft size={16} />
+            </button>
+            <button
+              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+              disabled={currentPage === 1}
+              className="p-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Previous page"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            
+            <span className="px-3 py-2 text-sm">
+              Page {currentPage} of {totalPages}
+            </span>
+            
+            <button
+              onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+              disabled={currentPage === totalPages}
+              className="p-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Next page"
+            >
+              <ChevronRight size={16} />
+            </button>
+            <button
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage === totalPages}
+              className="p-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Last page"
+            >
+              <ChevronsRight size={16} />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setCurrentPage(1)}
-            disabled={currentPage === 1}
-            className="p-1 rounded border disabled:opacity-50"
-            title="First Page"
-          >
-            <ChevronsLeft size={16} />
-          </button>
-          <button
-            onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-            disabled={currentPage === 1}
-            className="p-1 rounded border disabled:opacity-50"
-            title="Previous Page"
-          >
-            <ChevronLeft size={16} />
-          </button>
-          <span className="text-sm">
-            Page {currentPage} of {totalPages}
-          </span>
-          <button
-            onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-            disabled={currentPage === totalPages}
-            className="p-1 rounded border disabled:opacity-50"
-            title="Next Page"
-          >
-            <ChevronRight size={16} />
-          </button>
-          <button
-            onClick={() => setCurrentPage(totalPages)}
-            disabled={currentPage === totalPages}
-            className="p-1 rounded border disabled:opacity-50"
-            title="Last Page"
-          >
-            <ChevronsRight size={16} />
-          </button>
-        </div>
-      </div>
+      )}
     </>
   );
 }

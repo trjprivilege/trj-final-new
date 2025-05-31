@@ -1,0 +1,249 @@
+-- Jewelry Royalty Program - ROBUST VERSION for Supabase
+-- No more "value too long" errors!
+
+-- Drop existing tables completely
+DROP TABLE IF EXISTS public.customer_points CASCADE;
+DROP TABLE IF EXISTS public.sales_records CASCADE;
+DROP FUNCTION IF EXISTS refresh_customer_points() CASCADE;
+DROP FUNCTION IF EXISTS parse_date_simple(TEXT) CASCADE;
+DROP FUNCTION IF EXISTS claim_customer_points(TEXT, NUMERIC) CASCADE;
+DROP VIEW IF EXISTS customer_summary CASCADE;
+DROP VIEW IF EXISTS customer_points_calculation CASCADE;
+DROP VIEW IF EXISTS update_all_points CASCADE;
+
+-- Create sales_records table with GENEROUS field sizes
+CREATE TABLE public.sales_records (
+    "CUSTOMER CODE" TEXT NOT NULL,           -- No limit, handles any customer code
+    "CUSTOMER NAME" TEXT,                    -- No limit, handles any name length
+    "HOUSE NAME" TEXT,                       -- No limit, handles any house name
+    "STREET" TEXT,                           -- No limit, handles any street address
+    "PLACE" TEXT,                            -- No limit, handles any place name
+    "PIN CODE" TEXT,                         -- No limit, handles any postal code format
+    "MOBILE" TEXT,                           -- No limit, handles any mobile format
+    "NET WEIGHT" NUMERIC(15,3) DEFAULT 0 CHECK ("NET WEIGHT" >= 0),  -- Large precision for weight
+    "LAST SALES DATE" TEXT,                  -- Keep as TEXT for DD/MM/YYYY format
+    "LAST_SALES_DATE_PARSED" DATE,           -- Parsed date column
+    "CREATED_AT" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    "UPDATED_AT" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    CONSTRAINT sales_records_pkey PRIMARY KEY ("CUSTOMER CODE")
+);
+
+-- Create customer_points table
+CREATE TABLE public.customer_points (
+    "CUSTOMER CODE" TEXT NOT NULL,
+    "TOTAL_POINTS" NUMERIC(15,2) DEFAULT 0 CHECK ("TOTAL_POINTS" >= 0),
+    "CLAIMED_POINTS" NUMERIC(15,2) DEFAULT 0 CHECK ("CLAIMED_POINTS" >= 0),
+    "UNCLAIMED_POINTS" NUMERIC(15,2) GENERATED ALWAYS AS ("TOTAL_POINTS" - "CLAIMED_POINTS") STORED,
+    "LAST_UPDATED" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    CONSTRAINT customer_points_pkey PRIMARY KEY ("CUSTOMER CODE"),
+    CONSTRAINT fk_customer_code FOREIGN KEY ("CUSTOMER CODE") 
+        REFERENCES public.sales_records ("CUSTOMER CODE") ON DELETE CASCADE,
+    CONSTRAINT chk_claimed_not_exceed_total CHECK ("CLAIMED_POINTS" <= "TOTAL_POINTS")
+);
+
+-- Create indexes for performance
+CREATE INDEX idx_sales_records_customer_name ON public.sales_records USING btree ("CUSTOMER NAME");
+CREATE INDEX idx_sales_records_mobile ON public.sales_records USING btree ("MOBILE");
+CREATE INDEX idx_sales_records_place ON public.sales_records USING btree ("PLACE");
+CREATE INDEX idx_sales_records_pin_code ON public.sales_records USING btree ("PIN CODE");
+CREATE INDEX idx_sales_records_last_sales_date ON public.sales_records USING btree ("LAST_SALES_DATE_PARSED");
+CREATE INDEX idx_customer_points_last_updated ON public.customer_points USING btree ("LAST_UPDATED");
+
+-- Simple function to refresh customer points after CSV import
+CREATE OR REPLACE FUNCTION refresh_customer_points()
+RETURNS TEXT
+LANGUAGE SQL
+AS $$
+    -- Insert new customers with their calculated points
+    INSERT INTO public.customer_points ("CUSTOMER CODE", "TOTAL_POINTS", "CLAIMED_POINTS", "LAST_UPDATED")
+    SELECT 
+        sr."CUSTOMER CODE",
+        FLOOR(COALESCE(SUM(sr."NET WEIGHT"), 0) / 10),  -- 10 grams = 1 point
+        0,
+        NOW()
+    FROM public.sales_records sr
+    WHERE sr."CUSTOMER CODE" NOT IN (SELECT "CUSTOMER CODE" FROM public.customer_points)
+    GROUP BY sr."CUSTOMER CODE"
+    ON CONFLICT ("CUSTOMER CODE") DO NOTHING;
+    
+    -- Update existing customers with recalculated points
+    UPDATE public.customer_points 
+    SET 
+        "TOTAL_POINTS" = points_calc.total_points,
+        "LAST_UPDATED" = NOW()
+    FROM (
+        SELECT 
+            sr."CUSTOMER CODE",
+            FLOOR(COALESCE(SUM(sr."NET WEIGHT"), 0) / 10) as total_points
+        FROM public.sales_records sr 
+        GROUP BY sr."CUSTOMER CODE"
+    ) as points_calc
+    WHERE customer_points."CUSTOMER CODE" = points_calc."CUSTOMER CODE";
+    
+    SELECT 'Points updated successfully for ' || 
+           (SELECT COUNT(*) FROM public.customer_points)::TEXT || 
+           ' customers';
+$$;
+
+-- Simple function to parse DD/MM/YYYY dates
+CREATE OR REPLACE FUNCTION parse_date_simple(date_text TEXT)
+RETURNS DATE
+LANGUAGE SQL
+IMMUTABLE
+AS $$
+    SELECT CASE 
+        WHEN date_text IS NULL OR TRIM(date_text) = '' THEN NULL
+        WHEN date_text ~ '^[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}$' THEN
+            TO_DATE(TRIM(date_text), 'DD/MM/YYYY')
+        WHEN date_text ~ '^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}$' THEN
+            TO_DATE(TRIM(date_text), 'YYYY-MM-DD')
+        ELSE NULL
+    END
+$$;
+
+-- Simple function to claim points (for app UI)
+CREATE OR REPLACE FUNCTION claim_customer_points(customer_code TEXT, points_to_claim NUMERIC)
+RETURNS TEXT
+LANGUAGE SQL
+AS $$
+    WITH point_check AS (
+        SELECT 
+            "CUSTOMER CODE",
+            "UNCLAIMED_POINTS"
+        FROM public.customer_points 
+        WHERE "CUSTOMER CODE" = customer_code 
+        AND "UNCLAIMED_POINTS" >= points_to_claim
+        AND points_to_claim > 0
+    ),
+    point_update AS (
+        UPDATE public.customer_points 
+        SET 
+            "CLAIMED_POINTS" = "CLAIMED_POINTS" + points_to_claim,
+            "LAST_UPDATED" = NOW()
+        WHERE "CUSTOMER CODE" IN (SELECT "CUSTOMER CODE" FROM point_check)
+        RETURNING "CUSTOMER CODE"
+    )
+    SELECT CASE 
+        WHEN EXISTS (SELECT 1 FROM point_update) 
+        THEN points_to_claim::TEXT || ' points claimed successfully for customer ' || customer_code
+        ELSE 'Failed: Insufficient points or invalid customer ' || customer_code
+    END;
+$$;
+
+-- Function to update parsed dates (run after CSV import)
+CREATE OR REPLACE FUNCTION update_parsed_dates()
+RETURNS TEXT
+LANGUAGE SQL
+AS $$
+    UPDATE public.sales_records 
+    SET 
+        "LAST_SALES_DATE_PARSED" = parse_date_simple("LAST SALES DATE"),
+        "UPDATED_AT" = NOW();
+    
+    SELECT 'Dates parsed successfully for ' || 
+           (SELECT COUNT(*) FROM public.sales_records WHERE "LAST_SALES_DATE_PARSED" IS NOT NULL)::TEXT || 
+           ' records';
+$$;
+
+-- Create a comprehensive view for easy reporting
+CREATE OR REPLACE VIEW customer_summary AS
+SELECT 
+    sr."CUSTOMER CODE",
+    sr."CUSTOMER NAME",
+    sr."HOUSE NAME",
+    sr."STREET",
+    sr."PLACE",
+    sr."PIN CODE",
+    sr."MOBILE",
+    sr."NET WEIGHT",
+    sr."LAST SALES DATE" as original_date,
+    sr."LAST_SALES_DATE_PARSED" as parsed_date,
+    COALESCE(cp."TOTAL_POINTS", 0) as total_points,
+    COALESCE(cp."CLAIMED_POINTS", 0) as claimed_points,
+    COALESCE(cp."UNCLAIMED_POINTS", 0) as unclaimed_points,
+    cp."LAST_UPDATED" as points_last_updated,
+    sr."CREATED_AT",
+    sr."UPDATED_AT"
+FROM public.sales_records sr
+LEFT JOIN public.customer_points cp ON sr."CUSTOMER CODE" = cp."CUSTOMER CODE";
+
+-- Enable Row Level Security (RLS) for Supabase
+ALTER TABLE public.sales_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customer_points ENABLE ROW LEVEL SECURITY;
+
+-- Create basic policies (adjust based on your auth requirements)
+CREATE POLICY "Enable read access for all users" ON public.sales_records
+    FOR SELECT USING (true);
+
+CREATE POLICY "Enable insert access for all users" ON public.sales_records
+    FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Enable update access for all users" ON public.sales_records
+    FOR UPDATE USING (true);
+
+CREATE POLICY "Enable read access for all users" ON public.customer_points
+    FOR SELECT USING (true);
+
+CREATE POLICY "Enable insert access for all users" ON public.customer_points
+    FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Enable update access for all users" ON public.customer_points
+    FOR UPDATE USING (true);
+
+-- Add comments
+COMMENT ON TABLE public.sales_records IS 'Customer sales data - Handles any CSV format with unlimited field sizes';
+COMMENT ON TABLE public.customer_points IS 'Loyalty points: 1 point per 10 grams gold - Auto calculated';
+COMMENT ON FUNCTION refresh_customer_points() IS 'Run after CSV import to calculate/update all customer points';
+COMMENT ON FUNCTION claim_customer_points(TEXT, NUMERIC) IS 'Claim points from app UI - returns success/failure message';
+COMMENT ON FUNCTION update_parsed_dates() IS 'Parse DD/MM/YYYY dates after CSV import';
+
+----------------------------------
+-- USAGE INSTRUCTIONS FOR SUPABASE
+----------------------------------
+
+-- 1. IMPORT YOUR CSV (no more size errors!):
+/*
+COPY public.sales_records ("CUSTOMER CODE", "CUSTOMER NAME", "HOUSE NAME", "STREET", "PLACE", "PIN CODE", "MOBILE", "NET WEIGHT", "LAST SALES DATE")
+FROM '/path/to/your/file.csv'
+WITH (FORMAT csv, HEADER true, DELIMITER ',');
+*/
+
+-- 2. AFTER CSV IMPORT, RUN THESE IN ORDER:
+/*
+-- Update points for all customers
+SELECT refresh_customer_points();
+
+-- Parse all dates from DD/MM/YYYY format  
+SELECT update_parsed_dates();
+*/
+
+-- 3. CLAIM POINTS (for app):
+/*
+SELECT claim_customer_points('CUSTOMER001', 5);
+*/
+
+-- 4. VIEW ALL DATA:
+/*
+SELECT * FROM customer_summary 
+ORDER BY "CUSTOMER CODE";
+*/
+
+-- 5. VIEW SPECIFIC CUSTOMER:
+/*
+SELECT * FROM customer_summary 
+WHERE "CUSTOMER CODE" = 'YOUR_CUSTOMER_CODE';
+*/
+
+-- 6. GET POINTS SUMMARY:
+/*
+SELECT 
+    COUNT(*) as total_customers,
+    SUM("TOTAL_POINTS") as total_points_issued,
+    SUM("CLAIMED_POINTS") as total_points_claimed,
+    SUM("UNCLAIMED_POINTS") as total_points_available
+FROM public.customer_points;
+*/
+
+SELECT 'Robust Jewelry Royalty Database created successfully! No more field size errors!' as success_message;

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
 import { supabase } from '../lib/supabaseClient';
-import { CloudUpload, CheckCircle, AlertCircle, X, RefreshCw, Clock, Trash2 } from 'lucide-react';
+import { CloudUpload, CheckCircle, AlertCircle, X, RefreshCw, Clock, Trash2, PlayCircle } from 'lucide-react';
 
 export default function UploadData() {
   const [file, setFile] = useState(null);
@@ -10,6 +10,7 @@ export default function UploadData() {
   const [lastUploadDate, setLastUploadDate] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [isProcessingPoints, setIsProcessingPoints] = useState(false);
 
   useEffect(() => {
     // Fetch last upload date from customer_points table
@@ -47,7 +48,7 @@ export default function UploadData() {
     
     Papa.parse(selectedFile, {
       header: true,
-      preview: 10, // Show more rows in preview
+      preview: 10,
       skipEmptyLines: true,
       complete: ({ data }) => setPreviewData(data),
     });
@@ -71,6 +72,28 @@ export default function UploadData() {
     }
   };
 
+  // Function to refresh customer points after upload
+  const refreshCustomerPoints = async () => {
+    try {
+      const { data, error } = await supabase.rpc('refresh_customer_points');
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      throw new Error(`Points calculation failed: ${error.message}`);
+    }
+  };
+
+  // Function to update parsed dates
+  const updateParsedDates = async () => {
+    try {
+      const { data, error } = await supabase.rpc('update_parsed_dates');
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      throw new Error(`Date parsing failed: ${error.message}`);
+    }
+  };
+
   const handleUpload = () => {
     if (!file) return setStatus(s => ({ ...s, error: 'Please choose a CSV file.' }));
     setStatus({ loading: true, success: '', error: '' });
@@ -80,7 +103,7 @@ export default function UploadData() {
     const progressInterval = setInterval(() => {
       setUploadProgress(prev => {
         const newProgress = prev + Math.random() * 15;
-        return newProgress >= 90 ? 90 : newProgress;
+        return newProgress >= 85 ? 85 : newProgress;
       });
     }, 300);
 
@@ -94,40 +117,54 @@ export default function UploadData() {
           return;
         }
         
-        // Convert numeric fields
+        // Map the CSV data to the new schema field names
         const records = data.map((row) => ({
-          "SL NO": row["SL NO"],
-          "CUSTOMER CODE": row["CUSTOMER CODE"],
-          "NAME1 & 2": row["NAME1 & 2"],
-          "HOUSE NAME": row["HOUSE NAME"],
-          STREET: row["STREET"],
-          PLACE: row["PLACE"],
-          "PIN CODE": row["PIN CODE"],
-          PHONE: row["PHONE"],
-          MOBILE: row["MOBILE"],
-          "NET WEIGHT": row["NET WEIGHT"] ? parseFloat(row["NET WEIGHT"]) : null,
-          "LAST SALES DATE": row["LAST SALES DATE"],
+          "CUSTOMER CODE": row["CUSTOMER CODE"] || row["Customer Code"],
+          "CUSTOMER NAME": row["CUSTOMER NAME"] || row["NAME1 & 2"] || row["Customer Name"],
+          "HOUSE NAME": row["HOUSE NAME"] || row["House Name"],
+          "STREET": row["STREET"] || row["Street"],
+          "PLACE": row["PLACE"] || row["Place"],
+          "PIN CODE": row["PIN CODE"] || row["Pin Code"],
+          "MOBILE": row["MOBILE"] || row["Mobile"],
+          "NET WEIGHT": row["NET WEIGHT"] || row["Net Weight"] ? parseFloat(row["NET WEIGHT"] || row["Net Weight"]) || 0 : 0,
+          "LAST SALES DATE": row["LAST SALES DATE"] || row["Last Sales Date"],
         }));
 
         try {
-          const { error } = await supabase
+          // Step 1: Upload to sales_records table
+          const { error: uploadError } = await supabase
             .from('sales_records')
             .upsert(records, { onConflict: 'CUSTOMER CODE' });
 
-          clearInterval(progressInterval);
-          
-          if (error) {
-            setStatus({ loading: false, success: '', error: error.message });
-          } else {
-            setUploadProgress(100);
-            setTimeout(() => {
-              setStatus({ loading: false, success: `Successfully uploaded ${records.length} records!`, error: '' });
-              // We won't clear the file and preview here so users can see what they uploaded
-            }, 500);
+          if (uploadError) {
+            throw new Error(`Upload failed: ${uploadError.message}`);
           }
+
+          setUploadProgress(90);
+          setIsProcessingPoints(true);
+
+          // Step 2: Refresh customer points
+          const pointsResult = await refreshCustomerPoints();
+          
+          // Step 3: Update parsed dates
+          const datesResult = await updateParsedDates();
+
+          clearInterval(progressInterval);
+          setUploadProgress(100);
+          setIsProcessingPoints(false);
+          
+          setTimeout(() => {
+            setStatus({ 
+              loading: false, 
+              success: `Successfully uploaded ${records.length} records! ${pointsResult || ''} ${datesResult || ''}`, 
+              error: '' 
+            });
+          }, 500);
+          
         } catch (err) {
           clearInterval(progressInterval);
-          setStatus({ loading: false, success: '', error: 'Upload failed: ' + err.message });
+          setIsProcessingPoints(false);
+          setStatus({ loading: false, success: '', error: err.message });
         }
       },
     });
@@ -138,6 +175,7 @@ export default function UploadData() {
     setPreviewData(null);
     setStatus({ loading: false, success: '', error: '' });
     setUploadProgress(0);
+    setIsProcessingPoints(false);
   };
 
   const formatFileSize = (size) => {
@@ -164,13 +202,33 @@ export default function UploadData() {
   return (
     <div className="bg-white p-6 rounded-lg shadow-lg max-w-5xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-800">Sales Records Upload</h2>
+        <div>
+          <h2 className="text-2xl font-bold text-gray-800">Sales Records Upload</h2>
+          <p className="text-sm text-gray-600 mt-1">Upload customer sales data - Points will be automatically calculated</p>
+        </div>
         {lastUploadDate && (
           <div className="flex items-center text-sm font-medium bg-blue-50 text-blue-700 px-3 py-1 rounded-md mt-2 sm:mt-0">
             <Clock className="w-4 h-4 mr-1" />
-            <span>Last data update: {formatDate(lastUploadDate)}</span>
+            <span>Last update: {formatDate(lastUploadDate)}</span>
           </div>
         )}
+      </div>
+
+      {/* Field mapping guide */}
+      <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+        <h3 className="text-sm font-medium text-amber-800 mb-2">CSV Field Requirements:</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-amber-700">
+          <p>• <strong>CUSTOMER CODE</strong> (required)</p>
+          <p>• <strong>CUSTOMER NAME</strong> or NAME1 & 2</p>
+          <p>• <strong>HOUSE NAME</strong></p>
+          <p>• <strong>STREET</strong></p>
+          <p>• <strong>PLACE</strong></p>
+          <p>• <strong>PIN CODE</strong></p>
+          <p>• <strong>MOBILE</strong></p>
+          <p>• <strong>NET WEIGHT</strong> (in grams, for points calculation)</p>
+          <p>• <strong>LAST SALES DATE</strong> (DD/MM/YYYY format)</p>
+        </div>
+        <p className="text-xs text-amber-600 mt-2">Points Formula: 1 point per 10 grams of gold weight</p>
       </div>
 
       {!file ? (
@@ -260,17 +318,19 @@ export default function UploadData() {
               </table>
             </div>
             <div className="py-2 px-4 bg-gray-50 text-sm text-gray-500 border-t">
-              Showing {previewData ? previewData.length : 0} of {file ? file.name : ''} rows
+              Showing {previewData ? previewData.length : 0} preview rows from {file ? file.name : ''}
             </div>
           </div>
         </div>
       )}
 
       {/* Progress bar */}
-      {status.loading && (
+      {(status.loading || isProcessingPoints) && (
         <div className="mb-6">
           <div className="flex justify-between mb-1">
-            <span className="text-sm font-medium text-blue-600">Uploading...</span>
+            <span className="text-sm font-medium text-blue-600">
+              {isProcessingPoints ? 'Processing points and dates...' : 'Uploading...'}
+            </span>
             <span className="text-sm font-medium text-blue-600">{Math.round(uploadProgress)}%</span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
@@ -279,6 +339,12 @@ export default function UploadData() {
               style={{ width: `${uploadProgress}%` }}
             ></div>
           </div>
+          {isProcessingPoints && (
+            <p className="text-xs text-blue-600 mt-1 flex items-center">
+              <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
+              Calculating loyalty points and parsing dates...
+            </p>
+          )}
         </div>
       )}
 
@@ -286,29 +352,29 @@ export default function UploadData() {
       <div className="mb-6">
         <button
           onClick={handleUpload}
-          disabled={status.loading || !file}
+          disabled={status.loading || !file || isProcessingPoints}
           className={`flex items-center justify-center px-6 py-3 rounded-md text-white font-medium transition-colors w-full
-            ${status.loading 
+            ${status.loading || isProcessingPoints
               ? 'bg-blue-400 cursor-not-allowed' 
               : file 
                 ? 'bg-blue-600 hover:bg-blue-700' 
                 : 'bg-gray-400 cursor-not-allowed'
             }`}
         >
-          {status.loading ? (
+          {status.loading || isProcessingPoints ? (
             <RefreshCw className="w-5 h-5 mr-2 animate-spin" />
           ) : (
-            <CloudUpload className="w-5 h-5 mr-2" />
+            <PlayCircle className="w-5 h-5 mr-2" />
           )}
-          Upload Sales Data
+          {isProcessingPoints ? 'Processing Data...' : 'Upload & Process Sales Data'}
         </button>
       </div>
 
       {/* Status messages */}
       {status.success && (
         <div className="p-4 bg-green-50 border border-green-200 rounded-md mb-4">
-          <p className="text-green-700 flex items-center">
-            <CheckCircle className="w-5 h-5 mr-2 text-green-500" /> 
+          <p className="text-green-700 flex items-start">
+            <CheckCircle className="w-5 h-5 mr-2 text-green-500 mt-0.5 flex-shrink-0" /> 
             <span>{status.success}</span>
           </p>
         </div>
@@ -316,8 +382,8 @@ export default function UploadData() {
       
       {status.error && (
         <div className="p-4 bg-red-50 border border-red-200 rounded-md mb-4">
-          <p className="text-red-700 flex items-center">
-            <AlertCircle className="w-5 h-5 mr-2 text-red-500" /> 
+          <p className="text-red-700 flex items-start">
+            <AlertCircle className="w-5 h-5 mr-2 text-red-500 mt-0.5 flex-shrink-0" /> 
             <span>{status.error}</span>
           </p>
         </div>
