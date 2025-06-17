@@ -1,32 +1,40 @@
 import { useState, useEffect } from 'react';
 import Papa from 'papaparse';
 import { supabase } from '../lib/supabaseClient';
-import { CloudUpload, CheckCircle, AlertCircle, X, RefreshCw, Clock, Trash2, PlayCircle } from 'lucide-react';
+import { CloudUpload, CheckCircle, AlertCircle, X, RefreshCw, Clock, Trash2, PlayCircle, Calendar, Edit2, Save } from 'lucide-react';
 
 export default function UploadData() {
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState({ loading: false, success: '', error: '' });
   const [previewData, setPreviewData] = useState(null);
-  const [lastUploadDate, setLastUploadDate] = useState(null);
+  const [lastUploadData, setLastUploadData] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isProcessingPoints, setIsProcessingPoints] = useState(false);
+  const [dataDownloadDate, setDataDownloadDate] = useState('');
+  const [currentRecordId, setCurrentRecordId] = useState(null);
 
   useEffect(() => {
-    // Fetch last upload date from customer_points table
-    const getLastUploadDate = async () => {
+    // Fetch last upload data from data_dates table
+    const getLastUploadData = async () => {
       const { data, error } = await supabase
-        .from('customer_points')
-        .select('LAST_UPDATED')
-        .order('LAST_UPDATED', { ascending: false })
+        .from('data_dates')
+        .select('*')
+        .order('upload_date', { ascending: false })
         .limit(1);
       
       if (!error && data.length > 0) {
-        setLastUploadDate(new Date(data[0].LAST_UPDATED));
+        setLastUploadData(data[0]);
+        setCurrentRecordId(data[0].id);
+        // Format the download date for the input field
+        if (data[0].data_download_date) {
+          const downloadDate = new Date(data[0].data_download_date);
+          setDataDownloadDate(downloadDate.toISOString().slice(0, 16));
+        }
       }
     };
     
-    getLastUploadDate();
+    getLastUploadData();
   }, [status.success]);
 
   const handleFileChange = (e) => {
@@ -94,6 +102,70 @@ export default function UploadData() {
     }
   };
 
+  // Function to save upload record with proper Indian timezone
+  const saveUploadRecord = async (fileName, recordsCount, downloadDate = null) => {
+    try {
+      const downloadDateTimestamp = downloadDate ? new Date(downloadDate).toISOString() : null;
+      
+      const { data, error } = await supabase.rpc('add_upload_record', {
+        p_file_name: fileName,
+        p_records_count: recordsCount,
+        p_data_download_date: downloadDateTimestamp
+      });
+      
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      console.error('Error saving upload record:', error);
+      return null;
+    }
+  };
+
+  // Function to update download date
+  const updateDownloadDate = async () => {
+    if (!dataDownloadDate) {
+      setStatus(s => ({ ...s, error: 'Please select a download date first.' }));
+      return;
+    }
+    
+    try {
+      const downloadDateTimestamp = new Date(dataDownloadDate).toISOString();
+      
+      // If we have a current record ID, update it
+      if (currentRecordId) {
+        const { data, error } = await supabase.rpc('update_download_date', {
+          p_id: currentRecordId,
+          p_data_download_date: downloadDateTimestamp
+        });
+        
+        if (error) throw error;
+        
+        setStatus(s => ({ ...s, success: 'Download date updated successfully!', error: '' }));
+        
+        // Refresh the upload data
+        const { data: updatedData } = await supabase
+          .from('data_dates')
+          .select('*')
+          .eq('id', currentRecordId)
+          .single();
+        
+        if (updatedData) {
+          setLastUploadData(updatedData);
+        }
+      } else {
+        // If no current record, just show a message that it will be saved with the next upload
+        setStatus(s => ({ 
+          ...s, 
+          success: 'Download date set! It will be saved when you upload your next file.', 
+          error: '' 
+        }));
+      }
+      
+    } catch (error) {
+      setStatus(s => ({ ...s, error: 'Failed to update download date: ' + error.message }));
+    }
+  };
+
   const handleUpload = () => {
     if (!file) return setStatus(s => ({ ...s, error: 'Please choose a CSV file.' }));
     setStatus({ loading: true, success: '', error: '' });
@@ -149,6 +221,13 @@ export default function UploadData() {
           // Step 3: Update parsed dates
           const datesResult = await updateParsedDates();
 
+          // Step 4: Save upload record with Indian timezone
+          const downloadDateForSave = dataDownloadDate ? dataDownloadDate : null;
+          const uploadRecordId = await saveUploadRecord(file.name, records.length, downloadDateForSave);
+          if (uploadRecordId) {
+            setCurrentRecordId(uploadRecordId);
+          }
+
           clearInterval(progressInterval);
           setUploadProgress(100);
           setIsProcessingPoints(false);
@@ -184,19 +263,24 @@ export default function UploadData() {
     else return (size / 1048576).toFixed(1) + ' MB';
   };
   
-  const formatDate = (date) => {
-    if (!date) return '';
-    const utcDate = new Date(date);
-    // Add IST offset (UTC+5:30)
-    utcDate.setMinutes(utcDate.getMinutes() + 330);
-    return new Intl.DateTimeFormat('en-IN', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    }).format(utcDate);
+  const formatIndianDate = (dateString) => {
+    if (!dateString) return '';
+    
+    try {
+      const date = new Date(dateString);
+      // Format in Indian timezone
+      return new Intl.DateTimeFormat('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      }).format(date);
+    } catch (error) {
+      return 'Invalid date';
+    }
   };
 
   return (
@@ -206,12 +290,88 @@ export default function UploadData() {
           <h2 className="text-2xl font-bold text-gray-800">Sales Records Upload</h2>
           <p className="text-sm text-gray-600 mt-1">Upload customer sales data - Points will be automatically calculated</p>
         </div>
-        {lastUploadDate && (
-          <div className="flex items-center text-sm font-medium bg-blue-50 text-blue-700 px-3 py-1 rounded-md mt-2 sm:mt-0">
-            <Clock className="w-4 h-4 mr-1" />
-            <span>Last update: {formatDate(lastUploadDate)}</span>
+        {lastUploadData && (
+          <div className="flex flex-col space-y-2 mt-2 sm:mt-0">
+            <div className="flex items-center text-sm font-medium bg-blue-50 text-blue-700 px-3 py-1 rounded-md">
+              <Clock className="w-4 h-4 mr-1" />
+              <span>Last upload: {formatIndianDate(lastUploadData.upload_date)}</span>
+            </div>
+            {lastUploadData.data_download_date && (
+              <div className="flex items-center text-sm font-medium bg-green-50 text-green-700 px-3 py-1 rounded-md">
+                <Calendar className="w-4 h-4 mr-1" />
+                <span>Data downloaded: {formatIndianDate(lastUploadData.data_download_date)}</span>
+              </div>
+            )}
           </div>
         )}
+      </div>
+
+      {/* Data Download Date Section */}
+      <div className="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg">
+        <h3 className="text-sm font-semibold text-gray-800 mb-3 flex items-center">
+          <Calendar className="w-4 h-4 mr-2 text-blue-600" />
+          Data Download Date Management
+        </h3>
+        
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-3">
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                When was this data downloaded from source?
+              </label>
+              <input
+                type="datetime-local"
+                value={dataDownloadDate}
+                onChange={(e) => setDataDownloadDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                placeholder="Select data download date and time"
+              />
+            </div>
+            
+            <div className="flex space-x-2">
+              <button
+                onClick={updateDownloadDate}
+                disabled={!dataDownloadDate}
+                className="flex items-center px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors text-sm disabled:bg-gray-400 disabled:cursor-not-allowed min-w-[80px] justify-center"
+              >
+                <Save className="w-4 h-4 mr-1" />
+                Save
+              </button>
+              
+              <button
+                onClick={() => {
+                  setDataDownloadDate('');
+                  setStatus(s => ({ ...s, success: '', error: '' }));
+                }}
+                className="flex items-center px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors text-sm"
+              >
+                <X className="w-4 h-4 mr-1" />
+                Clear
+              </button>
+            </div>
+          </div>
+          
+          {/* Current dates display */}
+          {lastUploadData && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-blue-200">
+              <div className="bg-white p-3 rounded-md border border-gray-200">
+                <div className="text-xs font-medium text-blue-600 mb-1">Last Upload Date</div>
+                <div className="text-sm text-gray-800">{formatIndianDate(lastUploadData.upload_date)}</div>
+              </div>
+              
+              {lastUploadData.data_download_date && (
+                <div className="bg-white p-3 rounded-md border border-gray-200">
+                  <div className="text-xs font-medium text-green-600 mb-1">Data Download Date</div>
+                  <div className="text-sm text-gray-800">{formatIndianDate(lastUploadData.data_download_date)}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        
+        <p className="text-xs text-gray-500 mt-3 bg-white p-2 rounded border-l-4 border-blue-400">
+          💡 <strong>Tip:</strong> Set the download date to track when data was originally exported from your source system before uploading here.
+        </p>
       </div>
 
       {/* Field mapping guide */}
