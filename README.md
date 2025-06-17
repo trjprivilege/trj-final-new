@@ -162,3 +162,6 @@ For technical support or questions about the loyalty program system, please cont
 ---
 
 *Built with ❤️ for efficient customer loyalty management*
+
+
+test commit
