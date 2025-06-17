@@ -20,16 +20,24 @@ export default function UploadData() {
       const { data, error } = await supabase
         .from('data_dates')
         .select('*')
-        .order('upload_date', { ascending: false })
+        .order('id', { ascending: false })
         .limit(1);
       
       if (!error && data.length > 0) {
+        
         setLastUploadData(data[0]);
         setCurrentRecordId(data[0].id);
-        // Format the download date for the input field
+        // Format the download date for the input field (IST from database)
         if (data[0].data_download_date) {
-          const downloadDate = new Date(data[0].data_download_date);
-          setDataDownloadDate(downloadDate.toISOString().slice(0, 16));
+          const istDate = new Date(data[0].data_download_date);
+          // Format for datetime-local input
+          const year = istDate.getFullYear();
+          const month = String(istDate.getMonth() + 1).padStart(2, '0');
+          const day = String(istDate.getDate()).padStart(2, '0');
+          const hours = String(istDate.getHours()).padStart(2, '0');
+          const minutes = String(istDate.getMinutes()).padStart(2, '0');
+          
+          setDataDownloadDate(`${year}-${month}-${day}T${hours}:${minutes}`);
         }
       }
     };
@@ -102,19 +110,31 @@ export default function UploadData() {
     }
   };
 
-  // Function to save upload record with proper Indian timezone
+  // Function to save upload record
   const saveUploadRecord = async (fileName, recordsCount, downloadDate = null) => {
     try {
-      const downloadDateTimestamp = downloadDate ? new Date(downloadDate).toISOString() : null;
+      // Convert local datetime to IST timestamp for database
+      let downloadDateTimestamp = null;
+      if (downloadDate) {
+        const inputDate = new Date(downloadDate);
+        // Add 5.5 hours to convert local time to proper UTC for IST storage
+        const istOffset = 5.5 * 60 * 60 * 1000;
+        const correctedDate = new Date(inputDate.getTime() + istOffset);
+        downloadDateTimestamp = correctedDate.toISOString();
+      }
       
-      const { data, error } = await supabase.rpc('add_upload_record', {
-        p_file_name: fileName,
-        p_records_count: recordsCount,
-        p_data_download_date: downloadDateTimestamp
-      });
+      const { data, error } = await supabase
+        .from('data_dates')
+        .insert({
+          file_name: fileName,
+          records_count: recordsCount,
+          data_download_date: downloadDateTimestamp
+        })
+        .select()
+        .single();
       
       if (error) throw error;
-      return data;
+      return data?.id;
     } catch (error) {
       console.error('Error saving upload record:', error);
       return null;
@@ -129,27 +149,43 @@ export default function UploadData() {
     }
     
     try {
-      const downloadDateTimestamp = new Date(dataDownloadDate).toISOString();
+      console.log('Saving download date:', dataDownloadDate);
+      console.log('Current record ID:', currentRecordId);
+      
+      // Convert the datetime-local input to IST timestamp
+      const inputDate = new Date(dataDownloadDate);
+      console.log('Input date object:', inputDate);
+      
+      // Since the input is treated as local time, we need to add 5.5 hours to make it UTC
+      // so that when stored and displayed, it shows the correct IST time
+      const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
+      const correctedDate = new Date(inputDate.getTime() + istOffset);
+      const downloadDateTimestamp = correctedDate.toISOString();
+      console.log('Corrected ISO timestamp:', downloadDateTimestamp);
       
       // If we have a current record ID, update it
       if (currentRecordId) {
-        const { data, error } = await supabase.rpc('update_download_date', {
-          p_id: currentRecordId,
-          p_data_download_date: downloadDateTimestamp
-        });
+        const { data, error } = await supabase
+          .from('data_dates')
+          .update({ data_download_date: downloadDateTimestamp })
+          .eq('id', currentRecordId);
+        
+        console.log('Update result:', { data, error });
         
         if (error) throw error;
         
         setStatus(s => ({ ...s, success: 'Download date updated successfully!', error: '' }));
         
-        // Refresh the upload data
-        const { data: updatedData } = await supabase
+        // Refresh the upload data to show the updated date
+        const { data: updatedData, error: fetchError } = await supabase
           .from('data_dates')
           .select('*')
           .eq('id', currentRecordId)
           .single();
         
-        if (updatedData) {
+        console.log('Fetched updated data:', { updatedData, fetchError });
+        
+        if (!fetchError && updatedData) {
           setLastUploadData(updatedData);
         }
       } else {
@@ -162,6 +198,7 @@ export default function UploadData() {
       }
       
     } catch (error) {
+      console.error('Save error:', error);
       setStatus(s => ({ ...s, error: 'Failed to update download date: ' + error.message }));
     }
   };
@@ -267,18 +304,34 @@ export default function UploadData() {
     if (!dateString) return '';
     
     try {
-      const date = new Date(dateString);
-      // Format in Indian timezone
-      return new Intl.DateTimeFormat('en-IN', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      }).format(date);
+      // Parse the UTC date and convert to IST manually
+      const utcDate = new Date(dateString);
+      
+      // Check if the date is valid
+      if (isNaN(utcDate.getTime())) {
+        return 'Invalid date';
+      }
+      
+      // Get the UTC components (which represent IST time)
+      const day = utcDate.getUTCDate();
+      const month = utcDate.getUTCMonth();
+      const year = utcDate.getUTCFullYear();
+      const hours = utcDate.getUTCHours();
+      const minutes = utcDate.getUTCMinutes();
+      
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      
+      // Convert to 12-hour format
+      const hour12 = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
+      const ampm = hours >= 12 ? 'pm' : 'am';
+      
+      const result = `${day.toString().padStart(2, '0')} ${monthNames[month]} ${year}, ${hour12.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} ${ampm}`;
+      
+      return result;
+      
     } catch (error) {
+      console.error('Date formatting error:', error);
       return 'Invalid date';
     }
   };
@@ -547,7 +600,10 @@ export default function UploadData() {
             <span>{status.error}</span>
           </p>
         </div>
+        
       )}
     </div>
   );
 }
+
+
