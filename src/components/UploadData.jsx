@@ -13,6 +13,7 @@ export default function UploadData() {
   const [isProcessingPoints, setIsProcessingPoints] = useState(false);
   const [dataDownloadDate, setDataDownloadDate] = useState('');
   const [currentRecordId, setCurrentRecordId] = useState(null);
+  const [isRefreshingPoints, setIsRefreshingPoints] = useState(false);
 
   useEffect(() => {
     // Fetch last upload data from data_dates table
@@ -226,34 +227,93 @@ export default function UploadData() {
           return;
         }
         
-        // Map the CSV data to the new schema field names
-        const records = data.map((row) => ({
-          "CUSTOMER CODE": row["CUSTOMER CODE"] || row["Customer Code"],
-          "CUSTOMER NAME": row["CUSTOMER NAME"] || row["NAME1 & 2"] || row["Customer Name"],
-          "HOUSE NAME": row["HOUSE NAME"] || row["House Name"],
-          "STREET": row["STREET"] || row["Street"],
-          "PLACE": row["PLACE"] || row["Place"],
-          "PIN CODE": row["PIN CODE"] || row["Pin Code"],
-          "MOBILE": row["MOBILE"] || row["Mobile"],
-          "NET WEIGHT": row["NET WEIGHT"] || row["Net Weight"] ? parseFloat(row["NET WEIGHT"] || row["Net Weight"]) || 0 : 0,
-          "LAST SALES DATE": row["LAST SALES DATE"] || row["Last Sales Date"],
-        }));
+        // Map the CSV data to the new schema field names with error handling
+        console.log('Starting to map CSV data, total rows:', data.length);
+        const records = [];
+        
+        for (let i = 0; i < data.length; i++) {
+          try {
+            const row = data[i];
+            
+            // Check for circular references or problematic data
+            if (typeof row !== 'object' || row === null) {
+              console.warn(`Row ${i} is not a valid object:`, row);
+              continue;
+            }
+            
+            const record = {
+              "CUSTOMER CODE": row["CUSTOMER CODE"] || row["Customer Code"] || '',
+              "CUSTOMER NAME": row["CUSTOMER NAME"] || row["NAME1 & 2"] || row["Customer Name"] || '',
+              "HOUSE NAME": row["HOUSE NAME"] || row["House Name"] || '',
+              "STREET": row["STREET"] || row["Street"] || '',
+              "PLACE": row["PLACE"] || row["Place"] || '',
+              "PIN CODE": row["PIN CODE"] || row["Pin Code"] || '',
+              "MOBILE": row["MOBILE"] || row["Mobile"] || '',
+              "NET WEIGHT": (() => {
+                const weight = row["NET WEIGHT"] || row["Net Weight"];
+                if (weight === null || weight === undefined || weight === '') return 0;
+                const parsed = parseFloat(weight);
+                return isNaN(parsed) ? 0 : parsed;
+              })(),
+              "LAST SALES DATE": row["LAST SALES DATE"] || row["Last Sales Date"] || '',
+            };
+            
+            records.push(record);
+            
+            if (i % 10 === 0) {
+              console.log(`Processed ${i + 1}/${data.length} rows`);
+            }
+            
+          } catch (error) {
+            console.error(`Error processing row ${i}:`, error, 'Row data:', data[i]);
+            throw new Error(`Failed to process row ${i}: ${error.message}`);
+          }
+        }
+        
+        console.log('Successfully mapped', records.length, 'records');
 
         try {
-          // Step 1: Upload to sales_records table
-          const { error: uploadError } = await supabase
-            .from('sales_records')
-            .upsert(records, { onConflict: 'CUSTOMER CODE' });
+          // Step 1: Upload to sales_records table in batches to avoid database stack overflow
+          const BATCH_SIZE = 20; // Process 20 records at a time to avoid Supabase recursion limits
+          const totalBatches = Math.ceil(records.length / BATCH_SIZE);
+          
+          console.log(`Uploading ${records.length} records in ${totalBatches} batches of ${BATCH_SIZE}`);
+          
+          for (let i = 0; i < totalBatches; i++) {
+            const start = i * BATCH_SIZE;
+            const end = Math.min(start + BATCH_SIZE, records.length);
+            const batch = records.slice(start, end);
+            
+            console.log(`Uploading batch ${i + 1}/${totalBatches} (${batch.length} records)`);
+            
+            const { error: uploadError } = await supabase
+              .from('sales_records')
+              .upsert(batch, { onConflict: 'CUSTOMER CODE' });
 
-          if (uploadError) {
-            throw new Error(`Upload failed: ${uploadError.message}`);
+            if (uploadError) {
+              throw new Error(`Upload failed at batch ${i + 1}/${totalBatches}: ${uploadError.message}`);
+            }
+            
+            // Update progress as we process each batch
+            const batchProgress = Math.min(85, (i + 1) / totalBatches * 85);
+            setUploadProgress(batchProgress);
+            
+            console.log(`Batch ${i + 1} completed successfully`);
+            
+            // Small delay between batches to prevent overwhelming the database
+            if (i < totalBatches - 1) {
+              await new Promise(resolve => setTimeout(resolve, 200));
+            }
           }
+          
+          console.log('All batches uploaded successfully');
 
           setUploadProgress(90);
           setIsProcessingPoints(true);
 
-          // Step 2: Refresh customer points
-          const pointsResult = await refreshCustomerPoints();
+          // Step 2: Refresh customer points (temporarily disabled due to timeout)
+          // const pointsResult = await refreshCustomerPoints();
+          console.log('Points calculation skipped - will run separately to avoid timeout');
           
           // Step 3: Update parsed dates
           const datesResult = await updateParsedDates();
@@ -272,7 +332,7 @@ export default function UploadData() {
           setTimeout(() => {
             setStatus({ 
               loading: false, 
-              success: `Successfully uploaded ${records.length} records! ${pointsResult || ''} ${datesResult || ''}`, 
+              success: `Successfully uploaded ${records.length} records!`, 
               error: '' 
             });
           }, 500);
@@ -284,6 +344,31 @@ export default function UploadData() {
         }
       },
     });
+  };
+
+  // Function to manually refresh customer points
+  const handleRefreshPoints = async () => {
+    setIsRefreshingPoints(true);
+    setStatus({ loading: false, success: '', error: '' });
+
+    try {
+      const { data, error } = await supabase.rpc('refresh_customer_points');
+      if (error) throw error;
+      
+      setStatus({ 
+        loading: false, 
+        success: `Points calculation completed successfully! ${data || ''}`, 
+        error: '' 
+      });
+    } catch (error) {
+      setStatus({ 
+        loading: false, 
+        success: '', 
+        error: `Points calculation failed: ${error.message}` 
+      });
+    } finally {
+      setIsRefreshingPoints(false);
+    }
   };
 
   const resetForm = () => {
@@ -561,13 +646,13 @@ export default function UploadData() {
         </div>
       )}
 
-      {/* Action button */}
-      <div className="mb-6">
+      {/* Action buttons */}
+      <div className="mb-6 space-y-3">
         <button
           onClick={handleUpload}
-          disabled={status.loading || !file || isProcessingPoints}
+          disabled={status.loading || !file || isProcessingPoints || isRefreshingPoints}
           className={`flex items-center justify-center px-6 py-3 rounded-md text-white font-medium transition-colors w-full
-            ${status.loading || isProcessingPoints
+            ${status.loading || isProcessingPoints || isRefreshingPoints
               ? 'bg-blue-400 cursor-not-allowed' 
               : file 
                 ? 'bg-blue-600 hover:bg-blue-700' 
@@ -580,6 +665,24 @@ export default function UploadData() {
             <PlayCircle className="w-5 h-5 mr-2" />
           )}
           {isProcessingPoints ? 'Processing Data...' : 'Upload & Process Sales Data'}
+        </button>
+
+        {/* Refresh Points Button */}
+        <button
+          onClick={handleRefreshPoints}
+          disabled={status.loading || isProcessingPoints || isRefreshingPoints}
+          className={`flex items-center justify-center px-6 py-3 rounded-md text-white font-medium transition-colors w-full
+            ${status.loading || isProcessingPoints || isRefreshingPoints
+              ? 'bg-green-400 cursor-not-allowed' 
+              : 'bg-green-600 hover:bg-green-700'
+            }`}
+        >
+          {isRefreshingPoints ? (
+            <RefreshCw className="w-5 h-5 mr-2 animate-spin" />
+          ) : (
+            <RefreshCw className="w-5 h-5 mr-2" />
+          )}
+          {isRefreshingPoints ? 'Calculating Points...' : 'Refresh Customer Points'}
         </button>
       </div>
 
