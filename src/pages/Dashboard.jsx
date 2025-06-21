@@ -20,7 +20,7 @@ export default function Dashboard() {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [pwdModalOpen, setPwdModalOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [view, setView] = useState('Upload Data'); // or 'Customer List'
+  const [view, setView] = useState('Customer List'); // Default to Customer List
 
   const profileMenuRef = useRef();
   const navigate = useNavigate();

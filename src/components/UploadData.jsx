@@ -13,7 +13,7 @@ export default function UploadData() {
   const [isProcessingPoints, setIsProcessingPoints] = useState(false);
   const [dataDownloadDate, setDataDownloadDate] = useState('');
   const [currentRecordId, setCurrentRecordId] = useState(null);
-  const [isRefreshingPoints, setIsRefreshingPoints] = useState(false);
+
 
   useEffect(() => {
     // Fetch last upload data from data_dates table
@@ -204,8 +204,35 @@ export default function UploadData() {
     }
   };
 
-  const handleUpload = () => {
+  const handleUpload = async () => {
     if (!file) return setStatus(s => ({ ...s, error: 'Please choose a CSV file.' }));
+    
+    // Check for duplicate uploads
+    try {
+      const { data: existingFile, error: checkError } = await supabase
+        .from('data_dates')
+        .select('file_name, records_count, upload_date')
+        .eq('file_name', file.name)
+        .order('upload_date', { ascending: false })
+        .limit(1);
+        
+      if (checkError) {
+        console.warn('Could not check for duplicates:', checkError);
+      } else if (existingFile && existingFile.length > 0) {
+        const lastUpload = existingFile[0];
+        const lastUploadDate = new Date(lastUpload.upload_date).toLocaleString();
+        const confirmDuplicate = window.confirm(
+          `Warning: A file named "${file.name}" was already uploaded on ${lastUploadDate} with ${lastUpload.records_count} records.\n\nDo you want to upload it again? This will update existing customer records.`
+        );
+        
+        if (!confirmDuplicate) {
+          return setStatus(s => ({ ...s, error: 'Upload cancelled - duplicate file detected.' }));
+        }
+      }
+    } catch (error) {
+      console.warn('Duplicate check failed:', error);
+    }
+    
     setStatus({ loading: true, success: '', error: '' });
     setUploadProgress(0);
 
@@ -346,30 +373,7 @@ export default function UploadData() {
     });
   };
 
-  // Function to manually refresh customer points
-  const handleRefreshPoints = async () => {
-    setIsRefreshingPoints(true);
-    setStatus({ loading: false, success: '', error: '' });
 
-    try {
-      const { data, error } = await supabase.rpc('refresh_customer_points');
-      if (error) throw error;
-      
-      setStatus({ 
-        loading: false, 
-        success: `Points calculation completed successfully! ${data || ''}`, 
-        error: '' 
-      });
-    } catch (error) {
-      setStatus({ 
-        loading: false, 
-        success: '', 
-        error: `Points calculation failed: ${error.message}` 
-      });
-    } finally {
-      setIsRefreshingPoints(false);
-    }
-  };
 
   const resetForm = () => {
     setFile(null);
@@ -646,13 +650,13 @@ export default function UploadData() {
         </div>
       )}
 
-      {/* Action buttons */}
-      <div className="mb-6 space-y-3">
+      {/* Action button */}
+      <div className="mb-6">
         <button
           onClick={handleUpload}
-          disabled={status.loading || !file || isProcessingPoints || isRefreshingPoints}
+          disabled={status.loading || !file || isProcessingPoints}
           className={`flex items-center justify-center px-6 py-3 rounded-md text-white font-medium transition-colors w-full
-            ${status.loading || isProcessingPoints || isRefreshingPoints
+            ${status.loading || isProcessingPoints
               ? 'bg-blue-400 cursor-not-allowed' 
               : file 
                 ? 'bg-blue-600 hover:bg-blue-700' 
@@ -665,24 +669,6 @@ export default function UploadData() {
             <PlayCircle className="w-5 h-5 mr-2" />
           )}
           {isProcessingPoints ? 'Processing Data...' : 'Upload & Process Sales Data'}
-        </button>
-
-        {/* Refresh Points Button */}
-        <button
-          onClick={handleRefreshPoints}
-          disabled={status.loading || isProcessingPoints || isRefreshingPoints}
-          className={`flex items-center justify-center px-6 py-3 rounded-md text-white font-medium transition-colors w-full
-            ${status.loading || isProcessingPoints || isRefreshingPoints
-              ? 'bg-green-400 cursor-not-allowed' 
-              : 'bg-green-600 hover:bg-green-700'
-            }`}
-        >
-          {isRefreshingPoints ? (
-            <RefreshCw className="w-5 h-5 mr-2 animate-spin" />
-          ) : (
-            <RefreshCw className="w-5 h-5 mr-2" />
-          )}
-          {isRefreshingPoints ? 'Calculating Points...' : 'Refresh Customer Points'}
         </button>
       </div>
 
