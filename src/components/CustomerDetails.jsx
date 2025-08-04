@@ -32,7 +32,7 @@ export default function CustomerDetails() {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [customerToDelete, setCustomerToDelete] = useState(null);
   const [isClaimModalOpen, setIsClaimModalOpen] = useState(false);
-  const [claimAmount, setClaimAmount] = useState(10);
+  const [claimAmount, setClaimAmount] = useState(5); // Default to 5 instead of 10
   const [customerToClaim, setCustomerToClaim] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -62,6 +62,26 @@ export default function CustomerDetails() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [totalPages, setTotalPages] = useState(1);
+
+  // Helper function to calculate maximum claimable points (in multiples of 5)
+  const getMaxClaimablePoints = (unclaimedPoints) => {
+    return Math.floor(unclaimedPoints / 5) * 5;
+  };
+
+  // Helper function to check if customer is eligible for claims (≥5 points)
+  const isEligibleForClaims = (unclaimedPoints) => {
+    return unclaimedPoints >= 5;
+  };
+
+  // Helper function to generate claim amount options
+  const getClaimAmountOptions = (unclaimedPoints) => {
+    const maxClaimable = getMaxClaimablePoints(unclaimedPoints);
+    const options = [];
+    for (let i = 5; i <= maxClaimable; i += 5) {
+      options.push(i);
+    }
+    return options;
+  };
 
   // Optimized data loading with server-side filtering and pagination
   async function loadData() {
@@ -139,7 +159,8 @@ export default function CustomerDetails() {
           query = query.gt('claimed_points', 0);
         }
         if (filters.claimStatus.hasEligibleClaims) {
-          query = query.gte('unclaimed_points', 10);
+          // Updated: Change from 10 to 5 points minimum for eligibility
+          query = query.gte('unclaimed_points', 5);
         }
 
         return query;
@@ -159,11 +180,11 @@ export default function CustomerDetails() {
       
       if (error) throw error;
 
-      // Create a separate query to count eligible customers (unclaimed_points >= 10) with the same filters
+      // Create a separate query to count eligible customers (unclaimed_points >= 5) with the same filters
       let eligibleQuery = supabase
         .from('customer_summary')
         .select('"CUSTOMER CODE"', { count: 'exact', head: true })
-        .gte('unclaimed_points', 10);
+        .gte('unclaimed_points', 5); // Updated: Change from 10 to 5
 
       // Apply the same filters to the eligible count query
       eligibleQuery = applyFilters(eligibleQuery);
@@ -339,7 +360,9 @@ export default function CustomerDetails() {
 
   const handleClaimClick = (customer) => {
     setCustomerToClaim(customer);
-    setClaimAmount(Math.min(10, customer.unclaimed)); // Default to available unclaimed or 10
+    // Set default claim amount to the maximum claimable (in multiples of 5)
+    const maxClaimable = getMaxClaimablePoints(customer.unclaimed);
+    setClaimAmount(Math.min(5, maxClaimable)); // Default to 5 or max claimable, whichever is smaller
     setIsClaimModalOpen(true);
   };
 
@@ -419,8 +442,20 @@ export default function CustomerDetails() {
         return;
       }
 
+      // Validate that claim amount is a multiple of 5
+      if (claimAmount % 5 !== 0) {
+        setErrorMessage('Claim amount must be a multiple of 5 points');
+        return;
+      }
+
       if (claimAmount > customerToClaim.unclaimed) {
         setErrorMessage(`Cannot claim ${claimAmount} points. Only ${customerToClaim.unclaimed} points available.`);
+        return;
+      }
+
+      const maxClaimable = getMaxClaimablePoints(customerToClaim.unclaimed);
+      if (claimAmount > maxClaimable) {
+        setErrorMessage(`Cannot claim ${claimAmount} points. Maximum claimable in multiples of 5: ${maxClaimable} points.`);
         return;
       }
 
@@ -434,10 +469,11 @@ export default function CustomerDetails() {
 
       setIsClaimModalOpen(false);
       setCustomerToClaim(null);
-      setClaimAmount(10);
+      setClaimAmount(5);
       
       // Show success message
-      setErrorMessage(`✅ ${result}`);
+      const remainingPoints = customerToClaim.unclaimed - claimAmount;
+      setErrorMessage(`✅ ${result} (${remainingPoints} points remaining)`);
       setTimeout(() => setErrorMessage(''), 5000);
       
       await loadData();
@@ -489,6 +525,8 @@ export default function CustomerDetails() {
         </div>
       )}
 
+   
+
       {/* Filters */}
       <CustomerFilters
         query={query}
@@ -515,6 +553,8 @@ export default function CustomerDetails() {
         totalFilteredCount={totalFilteredCount}
         eligibleCustomersCount={eligibleCustomersCount}
         totalStatistics={totalStatistics}
+        isEligibleForClaims={isEligibleForClaims} // Pass the eligibility checker
+        getMaxClaimablePoints={getMaxClaimablePoints} // Pass the max claimable calculator
       />
 
       {/* Customer Form Modal */}
@@ -697,7 +737,7 @@ export default function CustomerDetails() {
         </div>
       )}
 
-      {/* Claim Points Modal */}
+      {/* Updated Claim Points Modal - Multiple of 5 */}
       {isClaimModalOpen && customerToClaim && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
@@ -715,23 +755,35 @@ export default function CustomerDetails() {
                 <p className="text-green-600 font-medium">
                   Available Points: {customerToClaim.unclaimed}
                 </p>
+                <p className="text-blue-600 font-medium">
+                  Max Claimable: {getMaxClaimablePoints(customerToClaim.unclaimed)} points
+                </p>
               </div>
             
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Points to Claim
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Points to Claim (multiples of 5 only)
               </label>
-              <input
-                type="number"
-                  min="1"
-                  max={customerToClaim.unclaimed}
+              
+              {/* Dropdown selector for multiples of 5 */}
+              <select
                 value={claimAmount}
-                  onChange={(e) => setClaimAmount(parseInt(e.target.value) || 0)}
-                  className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Minimum claim: 1 point | Maximum: {customerToClaim.unclaimed} points
-                </p>
+                onChange={(e) => setClaimAmount(parseInt(e.target.value) || 5)}
+                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {getClaimAmountOptions(customerToClaim.unclaimed).map(amount => (
+                  <option key={amount} value={amount}>
+                    {amount} points
+                  </option>
+                ))}
+              </select>
+              
+              <div className="mt-2 text-xs text-gray-500 bg-blue-50 p-2 rounded">
+                <p><strong>New Claiming Rules:</strong></p>
+                <p>• Claims must be in multiples of 5 points</p>
+                <p>• Remaining points after claim: {customerToClaim.unclaimed - claimAmount}</p>
+                <p>• These remaining points can be claimed later when they reach multiples of 5</p>
+              </div>
             </div>
             
               <div className="flex justify-end gap-3">
@@ -743,7 +795,7 @@ export default function CustomerDetails() {
               </button>
               <button
                 onClick={handleClaimPoints}
-                  disabled={!claimAmount || claimAmount > customerToClaim.unclaimed}
+                  disabled={!claimAmount || claimAmount > getMaxClaimablePoints(customerToClaim.unclaimed)}
                   className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                   Claim {claimAmount} Points

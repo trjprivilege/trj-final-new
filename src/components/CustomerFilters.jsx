@@ -137,7 +137,7 @@ export default function CustomerFilters({
               </div>
             </div>
             
-            {/* Claim Status Filters */}
+            {/* Claim Status Filters - Updated for Multiple of 5 */}
             <div className="space-y-2">
               <h4 className="text-sm font-medium">Claim Status</h4>
               <div className="space-y-2">
@@ -157,8 +157,15 @@ export default function CustomerFilters({
                     onChange={(e) => handleFilterChange('claimStatus', 'hasEligibleClaims', e.target.checked)}
                     className="rounded text-blue-600 focus:ring-blue-500"
                   />
-                  <span className="text-sm">Has eligible claims (≥10 points)</span>
+                  <span className="text-sm">Has eligible claims (≥5 points)</span>
                 </label>
+              </div>
+              
+              {/* New info box about updated rules */}
+              <div className="mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-xs">
+                <p className="font-medium text-blue-800 mb-1">Updated Rules:</p>
+                <p className="text-blue-700">• Minimum eligibility: 5 points</p>
+                <p className="text-blue-700">• Claims in multiples of 5 only</p>
               </div>
             </div>
           </div>
