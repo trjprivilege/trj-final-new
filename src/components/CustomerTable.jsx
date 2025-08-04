@@ -1,6 +1,7 @@
-import React from 'react';
-import { Edit, Trash, Award, ChevronLeft, ChevronRight, FileText, Download, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import React, { useState } from 'react';
+import { Edit, Trash, Award, ChevronLeft, ChevronRight, FileText, Download, ChevronsLeft, ChevronsRight, History } from 'lucide-react';
 import Papa from 'papaparse';
+import ClaimHistoryDialog from './ClaimHistoryDialog';
 
 const pageSizeOptions = [10, 25, 50, 100, 500, 1000];
 
@@ -18,9 +19,31 @@ export default function CustomerTable({
   totalFilteredCount,
   eligibleCustomersCount,
   totalStatistics = { totalPoints: 0, totalClaimed: 0, totalUnclaimed: 0 },
-  isEligibleForClaims, // New prop for eligibility check
-  getMaxClaimablePoints // New prop for max claimable calculation
+  isEligibleForClaims,
+  getMaxClaimablePoints
 }) {
+  // State for claim history dialog
+  const [claimHistoryDialog, setClaimHistoryDialog] = useState({
+    isOpen: false,
+    customer: null
+  });
+
+  // Function to open claim history dialog
+  const handleClaimHistoryClick = (customer) => {
+    setClaimHistoryDialog({
+      isOpen: true,
+      customer: customer
+    });
+  };
+
+  // Function to close claim history dialog
+  const closeClaimHistoryDialog = () => {
+    setClaimHistoryDialog({
+      isOpen: false,
+      customer: null
+    });
+  };
+
   // Function to export data to CSV
   const exportToCSV = () => {
     const csvData = filtered.map(customer => ({
@@ -260,7 +283,7 @@ export default function CustomerTable({
                         {maxClaimable}
                       </span>
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap flex gap-2">
+                    <td className="px-3 py-2 whitespace-nowrap flex gap-1">
                       <button 
                         onClick={() => handleEditCustomer(customer)}
                         className="p-1 text-blue-600 hover:text-blue-800" 
@@ -277,6 +300,13 @@ export default function CustomerTable({
                           <Award size={16} />
                         </button>
                       )}
+                      <button 
+                        onClick={() => handleClaimHistoryClick(customer)}
+                        className="p-1 text-purple-600 hover:text-purple-800" 
+                        title="View Claim History"
+                      >
+                        <History size={16} />
+                      </button>
                       <button 
                         onClick={() => handleDeleteClick(customer)}
                         className="p-1 text-red-600 hover:text-red-800" 
@@ -354,7 +384,7 @@ export default function CustomerTable({
                   <div className="text-xs text-gray-500">
                     Last Sale: {customer.lastSalesDate || 'N/A'}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-1">
                     <button
                       onClick={() => handleEditCustomer(customer)}
                       className="p-2 text-blue-600 hover:bg-blue-50 rounded"
@@ -371,6 +401,13 @@ export default function CustomerTable({
                         <Award className="w-4 h-4" />
                       </button>
                     )}
+                    <button
+                      onClick={() => handleClaimHistoryClick(customer)}
+                      className="p-2 text-purple-600 hover:bg-purple-50 rounded"
+                      title="View Claim History"
+                    >
+                      <History className="w-4 h-4" />
+                    </button>
                     <button
                       onClick={() => handleDeleteClick(customer)}
                       className="p-2 text-red-600 hover:bg-red-50 rounded"
@@ -444,6 +481,13 @@ export default function CustomerTable({
           </div>
         </div>
       )}
+
+      {/* Claim History Dialog */}
+      <ClaimHistoryDialog
+        customer={claimHistoryDialog.customer}
+        isOpen={claimHistoryDialog.isOpen}
+        onClose={closeClaimHistoryDialog}
+      />
     </>
   );
 }
