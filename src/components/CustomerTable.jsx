@@ -7,6 +7,7 @@ const pageSizeOptions = [10, 25, 50, 100, 500, 1000];
 
 export default function CustomerTable({
   filtered,
+  fetchAllFilteredRows,
   loading,
   currentPage,
   setCurrentPage,
@@ -22,6 +23,9 @@ export default function CustomerTable({
   isEligibleForClaims,
   getMaxClaimablePoints
 }) {
+  const [printStyle, setPrintStyle] = useState('table');
+  const [isPreparingReport, setIsPreparingReport] = useState(false);
+
   // State for claim history dialog
   const [claimHistoryDialog, setClaimHistoryDialog] = useState({
     isOpen: false,
@@ -45,8 +49,25 @@ export default function CustomerTable({
   };
 
   // Function to export data to CSV
-  const exportToCSV = () => {
-    const csvData = filtered.map(customer => ({
+  const getRowsForReport = async () => {
+    if (!fetchAllFilteredRows || filtered.length >= totalFilteredCount) {
+      return filtered;
+    }
+    return fetchAllFilteredRows();
+  };
+
+  const exportToCSV = async () => {
+    setIsPreparingReport(true);
+    let reportRows = filtered;
+    try {
+      reportRows = await getRowsForReport();
+    } catch (error) {
+      console.error('Failed to load full dataset for CSV export:', error);
+    } finally {
+      setIsPreparingReport(false);
+    }
+
+    const csvData = reportRows.map(customer => ({
       'Customer Code': customer.code,
       'Customer Name': customer.name,
       'House Name': customer.houseName,
@@ -74,8 +95,62 @@ export default function CustomerTable({
   };
 
   // Function to print the customer list
-  const printCustomerList = () => {
+  const printCustomerList = async () => {
+    setIsPreparingReport(true);
+    let reportRows = filtered;
+    try {
+      reportRows = await getRowsForReport();
+    } catch (error) {
+      console.error('Failed to load full dataset for printing:', error);
+    } finally {
+      setIsPreparingReport(false);
+    }
+
     const printWindow = window.open('', '_blank');
+
+    const renderTableRows = () =>
+      reportRows.map(customer => {
+        const maxClaimable = getMaxClaimablePoints ? getMaxClaimablePoints(customer.unclaimed) : Math.floor(customer.unclaimed / 5) * 5;
+        return `
+          <tr>
+            <td>${customer.code || ''}</td>
+            <td>${customer.name || ''}</td>
+            <td>${customer.place || ''}</td>
+            <td>${customer.mobile || ''}</td>
+            <td>${customer.total || 0}</td>
+            <td>${customer.claimed || 0}</td>
+            <td>${customer.unclaimed || 0}</td>
+            <td>${maxClaimable}</td>
+            <td>${customer.lastSalesDate || ''}</td>
+          </tr>
+        `;
+      }).join('');
+
+    const renderStackedRows = () =>
+      reportRows.map(customer => {
+        const clean = (value) => {
+          if (value === null || value === undefined) return '';
+          return String(value).trim();
+        };
+
+        const code = clean(customer.code);
+        const name = clean(customer.name);
+        const houseName = clean(customer.houseName);
+        const street = clean(customer.street);
+        const place = clean(customer.place);
+        const pinCode = clean(customer.pinCode);
+        const mobile = clean(customer.mobile);
+        const addressLine = [houseName, street, place, pinCode].filter(Boolean).join(' ');
+
+        return `
+          <div class="customer-card">
+            <div class="customer-title">${code}</div>
+            ${name ? `<div class="stack-line">${name}</div>` : ''}
+            ${addressLine ? `<div class="stack-line">${addressLine}</div>` : ''}
+            ${mobile ? `<div class="stack-line">${mobile}</div>` : ''}
+          </div>
+        `;
+      }).join('');
     
     printWindow.document.write(`
       <html>
@@ -89,8 +164,32 @@ export default function CustomerTable({
             .header { text-align: center; margin-bottom: 20px; }
             .summary { margin-bottom: 20px; }
             .rules { background: #f0f8ff; padding: 10px; margin-bottom: 20px; border-left: 4px solid #007bff; }
+            .stacked-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+            .customer-card {
+              border: 1px solid #ddd;
+              border-radius: 8px;
+              padding: 10px;
+              page-break-inside: avoid;
+              box-sizing: border-box;
+              display: flex;
+              flex-direction: column;
+              gap: 6px;
+            }
+            .customer-title { font-size: 14px; font-weight: 700; margin-bottom: 2px; color: #1f2937; line-height: 1.2; }
+            .stack-line { font-size: 12px; color: #111827; line-height: 1.25; margin: 0; }
+            .toggle-btn { padding: 8px 14px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; font-size: 13px; cursor: pointer; }
+            .toggle-btn.active { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; font-weight: 600; }
             @media print {
-              .no-print { display: none; }
+              .no-print, .no-print * {
+                display: none !important;
+                visibility: hidden !important;
+              }
+            }
+            @media (max-width: 1100px) {
+              .stacked-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            }
+            @media (max-width: 700px) {
+              .stacked-grid { grid-template-columns: 1fr; }
             }
           </style>
         </head>
@@ -115,48 +214,79 @@ export default function CustomerTable({
             <p><strong>Total Points Available:</strong> ${totalStatistics.totalUnclaimed}</p>
           </div>
           
-          <div class="no-print" style="margin-bottom: 20px; text-align: center;">
+          <div id="print-controls" class="no-print" style="margin-bottom: 20px; display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <button id="btn-table" class="toggle-btn ${printStyle === 'table' ? 'active' : ''}" onclick="setReportStyle('table')">Table</button>
+            <button id="btn-stacked" class="toggle-btn ${printStyle === 'stacked' ? 'active' : ''}" onclick="setReportStyle('stacked')">Stacked</button>
             <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px;">Print Report</button>
           </div>
           
-          <table>
-            <thead>
-              <tr>
-                <th>Code</th>
-                <th>Customer Name</th>
-                <th>Place</th>
-                <th>Mobile</th>
-                <th>Total Points</th>
-                <th>Claimed</th>
-                <th>Unclaimed</th>
-                <th>Max Claimable</th>
-                <th>Last Sales Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${filtered.map(customer => {
-                const maxClaimable = getMaxClaimablePoints ? getMaxClaimablePoints(customer.unclaimed) : Math.floor(customer.unclaimed / 5) * 5;
-                return `
+          <div id="table-report" style="display:${printStyle === 'table' ? 'block' : 'none'};">
+            <table>
+              <thead>
                 <tr>
-                  <td>${customer.code || ''}</td>
-                  <td>${customer.name || ''}</td>
-                  <td>${customer.place || ''}</td>
-                  <td>${customer.mobile || ''}</td>
-                  <td>${customer.total || 0}</td>
-                  <td>${customer.claimed || 0}</td>
-                  <td>${customer.unclaimed || 0}</td>
-                  <td>${maxClaimable}</td>
-                  <td>${customer.lastSalesDate || ''}</td>
+                  <th>Code</th>
+                  <th>Customer Name</th>
+                  <th>Place</th>
+                  <th>Mobile</th>
+                  <th>Total Points</th>
+                  <th>Claimed</th>
+                  <th>Unclaimed</th>
+                  <th>Max Claimable</th>
+                  <th>Last Sales Date</th>
                 </tr>
-              `;}).join('')}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                ${renderTableRows()}
+              </tbody>
+            </table>
+          </div>
+          <div id="stacked-report" class="stacked-grid" style="display:${printStyle === 'stacked' ? 'grid' : 'none'};">
+            ${renderStackedRows()}
+          </div>
           
           <div style="margin-top: 20px; font-size: 10px; color: #666;">
             <p>Points Formula: 1 point per 10 grams of gold weight</p>
             <p>Claims must be in multiples of 5 points | Minimum eligibility: 5 points</p>
             <p>Report generated from Customer Loyalty Management System</p>
           </div>
+          <script>
+            var printControls = document.getElementById('print-controls');
+
+            function setReportStyle(style) {
+              var table = document.getElementById('table-report');
+              var stacked = document.getElementById('stacked-report');
+              var btnTable = document.getElementById('btn-table');
+              var btnStacked = document.getElementById('btn-stacked');
+
+              if (style === 'table') {
+                table.style.display = 'block';
+                stacked.style.display = 'none';
+                btnTable.classList.add('active');
+                btnStacked.classList.remove('active');
+                return;
+              }
+
+              table.style.display = 'none';
+              stacked.style.display = 'grid';
+              btnTable.classList.remove('active');
+              btnStacked.classList.add('active');
+            }
+
+            function hidePrintControls() {
+              if (printControls) {
+                printControls.style.display = 'none';
+              }
+            }
+
+            function showPrintControls() {
+              if (printControls) {
+                printControls.style.display = 'flex';
+              }
+            }
+
+            window.addEventListener('beforeprint', hidePrintControls);
+            window.addEventListener('afterprint', showPrintControls);
+          </script>
         </body>
       </html>
     `);
@@ -188,20 +318,22 @@ export default function CustomerTable({
           <h3 className="text-lg font-medium">Customer List</h3>
           <span className="text-sm text-gray-500">{totalFilteredCount} records found</span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <button
             onClick={exportToCSV}
-            className="flex items-center gap-1 px-3 py-1.5 bg-green-50 text-green-600 rounded-lg hover:bg-green-100 text-sm"
+            disabled={isPreparingReport}
+            className="flex items-center gap-1 px-3 py-1.5 bg-green-50 text-green-600 rounded-lg hover:bg-green-100 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Download size={16} />
-            <span className="hidden sm:inline">Export CSV</span>
+            <span className="hidden sm:inline">{isPreparingReport ? 'Preparing...' : 'Export CSV'}</span>
           </button>
           <button
             onClick={printCustomerList}
-            className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 text-sm"
+            disabled={isPreparingReport}
+            className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <FileText size={16} />
-            <span className="hidden sm:inline">Print Report</span>
+            <span className="hidden sm:inline">{isPreparingReport ? 'Preparing...' : 'Print Report'}</span>
           </button>
         </div>
       </div>

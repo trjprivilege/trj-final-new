@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { Plus, X, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
 import CustomerFilters from './CustomerFilters';
@@ -62,6 +62,104 @@ export default function CustomerDetails() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [totalPages, setTotalPages] = useState(1);
+  const customerListCacheRef = useRef(new Map());
+
+  // Debounce search query to prevent excessive API calls
+  const debouncedQuery = useDebounce(query, 500);
+
+  const parseNumberFilter = (value) => {
+    if (value === '' || value === null || value === undefined) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const transformCustomerRow = (row) => ({
+    code: row.customer_code || row["CUSTOMER CODE"],
+    name: row.customer_name || row["CUSTOMER NAME"],
+    houseName: row.house_name || row["HOUSE NAME"],
+    street: row.street || row["STREET"],
+    place: row.place || row["PLACE"],
+    pinCode: row.pin_code || row["PIN CODE"],
+    mobile: row.mobile || row["MOBILE"],
+    netWeight: row.net_weight || row["NET WEIGHT"],
+    lastSalesDate: row.original_date,
+    parsedDate: row.parsed_date,
+    total: row.total_points || 0,
+    claimed: row.claimed_points || 0,
+    unclaimed: row.unclaimed_points || 0,
+    lastUpdated: row.points_last_updated
+  });
+
+  const getListCacheKey = (page = currentPage, perPage = itemsPerPage) =>
+    JSON.stringify({
+      q: debouncedQuery.trim() || '',
+      filters,
+      page,
+      perPage
+    });
+
+  const applyCustomerListState = (payload, pageSize = itemsPerPage) => {
+    const pagedRows = (payload?.rows || []).map(transformCustomerRow);
+    const totalCount = payload?.total_count || 0;
+    const eligibleCount = payload?.eligible_count || 0;
+
+    setRows(pagedRows);
+    setTotalFilteredCount(totalCount);
+    setTotalPages(Math.max(1, Math.ceil(totalCount / pageSize)));
+    setEligibleCustomersCount(eligibleCount);
+    setTotalStatistics({
+      totalPoints: payload?.total_points || 0,
+      totalClaimed: payload?.total_claimed || 0,
+      totalUnclaimed: payload?.total_unclaimed || 0
+    });
+  };
+
+  const clearCustomerListCache = () => {
+    customerListCacheRef.current.clear();
+  };
+
+  const applyFiltersToQuery = (queryBuilder) => {
+    let queryRef = queryBuilder;
+
+    if (debouncedQuery.trim()) {
+      queryRef = queryRef.or(`"CUSTOMER CODE".ilike.%${debouncedQuery}%,"CUSTOMER NAME".ilike.%${debouncedQuery}%,"MOBILE".ilike.%${debouncedQuery}%`);
+    }
+
+    if (filters.dateRange.startDate) {
+      queryRef = queryRef.gte('parsed_date', filters.dateRange.startDate);
+    }
+    if (filters.dateRange.endDate) {
+      queryRef = queryRef.lte('parsed_date', filters.dateRange.endDate);
+    }
+
+    if (filters.points.minTotal) {
+      queryRef = queryRef.gte('total_points', parseNumberFilter(filters.points.minTotal));
+    }
+    if (filters.points.maxTotal) {
+      queryRef = queryRef.lte('total_points', parseNumberFilter(filters.points.maxTotal));
+    }
+    if (filters.points.minClaimed) {
+      queryRef = queryRef.gte('claimed_points', parseNumberFilter(filters.points.minClaimed));
+    }
+    if (filters.points.maxClaimed) {
+      queryRef = queryRef.lte('claimed_points', parseNumberFilter(filters.points.maxClaimed));
+    }
+    if (filters.points.minUnclaimed) {
+      queryRef = queryRef.gte('unclaimed_points', parseNumberFilter(filters.points.minUnclaimed));
+    }
+    if (filters.points.maxUnclaimed) {
+      queryRef = queryRef.lte('unclaimed_points', parseNumberFilter(filters.points.maxUnclaimed));
+    }
+
+    if (filters.claimStatus.hasClaimed) {
+      queryRef = queryRef.gt('claimed_points', 0);
+    }
+    if (filters.claimStatus.hasEligibleClaims) {
+      queryRef = queryRef.gte('unclaimed_points', 5);
+    }
+
+    return queryRef;
+  };
 
   // Helper function to calculate maximum claimable points (in multiples of 5)
   const getMaxClaimablePoints = (unclaimedPoints) => {
@@ -83,11 +181,68 @@ export default function CustomerDetails() {
     return options;
   };
 
+  const fetchCustomerListData = async (page = currentPage, perPage = itemsPerPage) => {
+    const rpcParams = {
+      p_query: debouncedQuery.trim() || null,
+      p_start_date: filters.dateRange.startDate || null,
+      p_end_date: filters.dateRange.endDate || null,
+      p_min_total: parseNumberFilter(filters.points.minTotal),
+      p_max_total: parseNumberFilter(filters.points.maxTotal),
+      p_min_claimed: parseNumberFilter(filters.points.minClaimed),
+      p_max_claimed: parseNumberFilter(filters.points.maxClaimed),
+      p_min_unclaimed: parseNumberFilter(filters.points.minUnclaimed),
+      p_max_unclaimed: parseNumberFilter(filters.points.maxUnclaimed),
+      p_has_claimed: filters.claimStatus.hasClaimed,
+      p_has_eligible_claims: filters.claimStatus.hasEligibleClaims,
+      p_page: page,
+      p_items_per_page: perPage
+    };
+
+    const { data: payload, error } = await supabase.rpc('get_customer_list_data', rpcParams);
+    if (error) throw error;
+    return payload;
+  };
+
+  const fetchAllFilteredRows = async () => {
+    const baseQuery = supabase
+      .from('customer_summary')
+      .select(`
+        "CUSTOMER CODE",
+        "CUSTOMER NAME",
+        "HOUSE NAME",
+        "STREET",
+        "PLACE",
+        "PIN CODE", 
+        "MOBILE",
+        "NET WEIGHT",
+        original_date,
+        parsed_date,
+        total_points,
+        claimed_points,
+        unclaimed_points,
+        points_last_updated
+      `)
+      .order('"CUSTOMER CODE"', { ascending: true });
+
+    const filteredQuery = applyFiltersToQuery(baseQuery);
+    const { data, error } = await filteredQuery;
+    if (error) throw error;
+    return (data || []).map(transformCustomerRow);
+  };
+
   // Optimized data loading with server-side filtering and pagination
   async function loadData() {
+    const cacheKey = getListCacheKey();
+    const cachedPayload = customerListCacheRef.current.get(cacheKey);
+    if (cachedPayload) {
+      applyCustomerListState(cachedPayload);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
-      await loadCustomersWithFilters();
+      await loadCustomersWithFilters(cacheKey);
     } catch (error) {
       console.error('Error loading data:', error);
       setErrorMessage('Failed to load customer data. Please try again.');
@@ -97,164 +252,29 @@ export default function CustomerDetails() {
   }
 
   // Load customers with server-side filtering and pagination using the new customer_summary view
-  async function loadCustomersWithFilters() {
+  async function loadCustomersWithFilters(cacheKey = null) {
     try {
-      // Build the base query using the new customer_summary view
-      let baseQuery = supabase
-        .from('customer_summary')
-        .select(`
-          "CUSTOMER CODE",
-          "CUSTOMER NAME",
-          "HOUSE NAME",
-          "STREET",
-          "PLACE",
-          "PIN CODE", 
-          "MOBILE",
-          "NET WEIGHT",
-          original_date,
-          parsed_date,
-          total_points,
-          claimed_points,
-          unclaimed_points,
-          points_last_updated
-        `, { count: 'exact' });
+      const payload = await fetchCustomerListData(currentPage, itemsPerPage);
+      applyCustomerListState(payload, itemsPerPage);
 
-      // Function to apply filters to a query
-      const applyFilters = (query) => {
-        // Apply search filters
-        if (debouncedQuery.trim()) {
-          query = query.or(`"CUSTOMER CODE".ilike.%${debouncedQuery}%,"CUSTOMER NAME".ilike.%${debouncedQuery}%,"MOBILE".ilike.%${debouncedQuery}%`);
+      const resolvedCacheKey = cacheKey || getListCacheKey(currentPage, itemsPerPage);
+      customerListCacheRef.current.set(resolvedCacheKey, payload);
+
+      // Prefetch next page in background so moving forward avoids loader.
+      const prefetchPage = currentPage + 1;
+      const maxPages = Math.max(1, Math.ceil((payload?.total_count || 0) / itemsPerPage));
+      if (prefetchPage <= maxPages) {
+        const nextKey = getListCacheKey(prefetchPage, itemsPerPage);
+        if (!customerListCacheRef.current.has(nextKey)) {
+          fetchCustomerListData(prefetchPage, itemsPerPage)
+            .then((nextPayload) => {
+              customerListCacheRef.current.set(nextKey, nextPayload);
+            })
+            .catch(() => {
+              // Ignore prefetch failures; main flow is unaffected.
+            });
         }
-
-        // Apply date range filters
-        if (filters.dateRange.startDate) {
-          query = query.gte('parsed_date', filters.dateRange.startDate);
-        }
-        if (filters.dateRange.endDate) {
-          query = query.lte('parsed_date', filters.dateRange.endDate);
-        }
-
-        // Apply points filters
-        if (filters.points.minTotal) {
-          query = query.gte('total_points', parseInt(filters.points.minTotal));
-        }
-        if (filters.points.maxTotal) {
-          query = query.lte('total_points', parseInt(filters.points.maxTotal));
-        }
-        if (filters.points.minClaimed) {
-          query = query.gte('claimed_points', parseInt(filters.points.minClaimed));
-        }
-        if (filters.points.maxClaimed) {
-          query = query.lte('claimed_points', parseInt(filters.points.maxClaimed));
-        }
-        if (filters.points.minUnclaimed) {
-          query = query.gte('unclaimed_points', parseInt(filters.points.minUnclaimed));
-        }
-        if (filters.points.maxUnclaimed) {
-          query = query.lte('unclaimed_points', parseInt(filters.points.maxUnclaimed));
-        }
-
-        // Apply claim status filters
-        if (filters.claimStatus.hasClaimed) {
-          query = query.gt('claimed_points', 0);
-        }
-        if (filters.claimStatus.hasEligibleClaims) {
-          // Updated: Change from 10 to 5 points minimum for eligibility
-          query = query.gte('unclaimed_points', 5);
-        }
-
-        return query;
-      };
-
-      // Apply filters to the main query
-      baseQuery = applyFilters(baseQuery);
-
-      // Apply pagination to the main query
-      const from = (currentPage - 1) * itemsPerPage;
-      const to = from + itemsPerPage - 1;
-      
-      const mainQuery = baseQuery.range(from, to).order('"CUSTOMER CODE"', { ascending: true });
-
-      // Execute the main query
-      const { data, error, count } = await mainQuery;
-      
-      if (error) throw error;
-
-      // Create a separate query to count eligible customers (unclaimed_points >= 5) with the same filters
-      let eligibleQuery = supabase
-        .from('customer_summary')
-        .select('"CUSTOMER CODE"', { count: 'exact', head: true })
-        .gte('unclaimed_points', 5); // Updated: Change from 10 to 5
-
-      // Apply the same filters to the eligible count query
-      eligibleQuery = applyFilters(eligibleQuery);
-
-      // Execute the eligible count query
-      const { count: eligibleCount, error: eligibleError } = await eligibleQuery;
-      
-      if (eligibleError) throw eligibleError;
-
-      // Create a query to get all points data with the same filters (no pagination) for statistics
-      let statsQuery = supabase
-        .from('customer_summary')
-        .select(`
-          total_points,
-          claimed_points,
-          unclaimed_points
-        `);
-
-      // Apply the same filters to the statistics query
-      statsQuery = applyFilters(statsQuery);
-
-      // Execute the statistics query without pagination to get all filtered records
-      const { data: statsData, error: statsError } = await statsQuery;
-      
-      if (statsError) throw statsError;
-
-      // Calculate statistics from the filtered data
-      let totalPoints = 0;
-      let totalClaimed = 0;
-      let totalUnclaimed = 0;
-
-      if (statsData && statsData.length > 0) {
-        statsData.forEach(row => {
-          totalPoints += row.total_points || 0;
-          totalClaimed += row.claimed_points || 0;
-          totalUnclaimed += row.unclaimed_points || 0;
-        });
       }
-
-      setTotalStatistics({
-        totalPoints,
-        totalClaimed,
-        totalUnclaimed
-      });
-
-      // Transform data to match existing component expectations
-      const transformedData = data.map(row => ({
-        code: row["CUSTOMER CODE"],
-        name: row["CUSTOMER NAME"],
-        houseName: row["HOUSE NAME"],
-        street: row["STREET"],
-        place: row["PLACE"],
-        pinCode: row["PIN CODE"],
-        mobile: row["MOBILE"],
-        netWeight: row["NET WEIGHT"],
-        lastSalesDate: row.original_date,
-        parsedDate: row.parsed_date,
-        total: row.total_points || 0,
-        claimed: row.claimed_points || 0,
-        unclaimed: row.unclaimed_points || 0,
-        lastUpdated: row.points_last_updated
-      }));
-
-      setRows(transformedData);
-      setTotalFilteredCount(count || 0);
-      setTotalPages(Math.ceil((count || 0) / itemsPerPage));
-      
-      // Set the eligible customers count from the database query
-      setEligibleCustomersCount(eligibleCount || 0);
-      
     } catch (error) {
       console.error('Error loading customers:', error);
       throw error;
@@ -271,6 +291,7 @@ export default function CustomerDetails() {
       const { data: datesResult, error: datesError } = await supabase.rpc('update_parsed_dates');
       if (datesError) throw datesError;
 
+      clearCustomerListCache();
       await loadData(); // Reload the data
       setErrorMessage(`✅ ${pointsResult} ${datesResult}`);
       setTimeout(() => setErrorMessage(''), 5000);
@@ -281,9 +302,6 @@ export default function CustomerDetails() {
       setIsRefreshing(false);
     }
   };
-
-  // Debounce search query to prevent excessive API calls
-  const debouncedQuery = useDebounce(query, 500);
 
   // Load data when component mounts or filters/pagination change
   useEffect(() => {
@@ -314,6 +332,7 @@ export default function CustomerDetails() {
       claimStatus: { hasClaimed: false, hasEligibleClaims: false }
     });
     setQuery('');
+    clearCustomerListCache();
   };
 
   const handleInputChange = (e) => {
@@ -403,6 +422,7 @@ export default function CustomerDetails() {
       }
 
       // Refresh points after customer data change
+      clearCustomerListCache();
       await handleRefreshPoints();
 
       setIsModalOpen(false);
@@ -426,6 +446,7 @@ export default function CustomerDetails() {
       
       setIsDeleteConfirmOpen(false);
       setCustomerToDelete(null);
+      clearCustomerListCache();
       await loadData();
     } catch (error) {
       console.error('Error deleting customer:', error);
@@ -476,6 +497,7 @@ export default function CustomerDetails() {
       setErrorMessage(`✅ ${result} (${remainingPoints} points remaining)`);
       setTimeout(() => setErrorMessage(''), 5000);
       
+      clearCustomerListCache();
       await loadData();
     } catch (error) {
       console.error('Error claiming points:', error);
@@ -541,6 +563,7 @@ export default function CustomerDetails() {
       {/* Customer Table */}
       <CustomerTable
         filtered={rows}
+        fetchAllFilteredRows={fetchAllFilteredRows}
         loading={loading}
         currentPage={currentPage}
         setCurrentPage={setCurrentPage}
