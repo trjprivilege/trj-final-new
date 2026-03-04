@@ -9,7 +9,6 @@ import {
   X,
   CloudUpload,
   List as ListIcon,
-  User,
 } from 'lucide-react';
 
 import UploadData from '../components/UploadData';
@@ -119,29 +118,43 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 overflow-hidden">
         {/* Sidebar - desktop only */}
-        <aside className="hidden lg:flex flex-col w-64 bg-white border-r border-gray-200">
-          <div className="px-6 py-6">
-            <h1 className="text-2xl font-bold text-blue-600">TRJ Dashboard</h1>
-          </div>
-          <nav className="flex-1 px-4 py-4 space-y-1">
-            {navItems.map((item) => (
-              <button
-                key={item.name}
-                onClick={() => setView(item.name)}
-                className={`w-full flex items-center px-4 py-3 rounded-lg text-left ${
-                  view === item.name
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                {item.icon}
-                <span className="ml-3 font-medium">{item.name}</span>
-              </button>
-            ))}
-          </nav>
-        </aside>
+        <div className="relative hidden lg:block w-20 shrink-0">
+          <aside className="group fixed left-0 top-[60px] bottom-0 z-40 w-20 overflow-hidden border-r border-gray-200 bg-white shadow-sm transition-[width,box-shadow] duration-300 ease-out hover:w-64 hover:shadow-xl">
+            <div className="border-b border-gray-100 px-4 py-4">
+              <div className="flex items-center justify-center group-hover:justify-start gap-2 min-w-0 transition-all duration-200 ease-out">
+                <img
+                  src="/favicon.png"
+                  alt="TRJ"
+                  className="w-8 h-8 rounded-md object-contain shrink-0"
+                />
+                <h1 className="text-lg font-bold text-blue-600 whitespace-nowrap overflow-hidden max-w-0 opacity-0 transition-all duration-200 ease-out group-hover:max-w-[180px] group-hover:opacity-100">
+                  TRJ Dashboard
+                </h1>
+              </div>
+            </div>
+            <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
+              {navItems.map((item) => (
+                <button
+                  key={item.name}
+                  onClick={() => setView(item.name)}
+                  title={item.name}
+                  className={`w-full flex items-center rounded-lg px-4 py-3 text-left transition-all duration-200 ease-out ${
+                    view === item.name
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  } justify-center group-hover:justify-start`}
+                >
+                  {item.icon}
+                  <span className="ml-0 max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 ease-out group-hover:ml-3 group-hover:max-w-[140px] group-hover:opacity-100">
+                    {item.name}
+                  </span>
+                </button>
+              ))}
+            </nav>
+          </aside>
+        </div>
 
         {/* Mobile sidebar overlay */}
         {mobileSidebarOpen && (
@@ -212,14 +225,14 @@ export default function Dashboard() {
         )}
 
         {/* Main content */}
-        <main className="flex-1 overflow-auto p-4 lg:p-6">
+        <main className="flex-1 min-w-0 overflow-auto p-4 lg:p-6">
           {view === 'Upload Data' ? <UploadData /> : <CustomerDetails />}
         </main>
       </div>
 
       {/* Change Password Modal */}
       {pwdModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-slate-900/35 backdrop-blur-[1px] flex items-center justify-center z-50 p-4">
           <ChangePasswordForm onClose={() => setPwdModalOpen(false)} user={user} />
         </div>
       )}

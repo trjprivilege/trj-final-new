@@ -203,31 +203,56 @@ export default function CustomerDetails() {
     return payload;
   };
 
-  const fetchAllFilteredRows = async () => {
-    const baseQuery = supabase
-      .from('customer_summary')
-      .select(`
-        "CUSTOMER CODE",
-        "CUSTOMER NAME",
-        "HOUSE NAME",
-        "STREET",
-        "PLACE",
-        "PIN CODE", 
-        "MOBILE",
-        "NET WEIGHT",
-        original_date,
-        parsed_date,
-        total_points,
-        claimed_points,
-        unclaimed_points,
-        points_last_updated
-      `)
-      .order('"CUSTOMER CODE"', { ascending: true });
+  const fetchFilteredRowsPage = async (page, perPage) => {
+    const payload = await fetchCustomerListData(page, perPage);
+    return {
+      rows: (payload?.rows || []).map(transformCustomerRow),
+      totalCount: payload?.total_count || 0
+    };
+  };
 
-    const filteredQuery = applyFiltersToQuery(baseQuery);
-    const { data, error } = await filteredQuery;
-    if (error) throw error;
-    return (data || []).map(transformCustomerRow);
+  const fetchAllFilteredRows = async () => {
+    const batchSize = 1000;
+    let from = 0;
+    const allRows = [];
+
+    while (true) {
+      const baseQuery = supabase
+        .from('customer_summary')
+        .select(`
+          "CUSTOMER CODE",
+          "CUSTOMER NAME",
+          "HOUSE NAME",
+          "STREET",
+          "PLACE",
+          "PIN CODE", 
+          "MOBILE",
+          "NET WEIGHT",
+          original_date,
+          parsed_date,
+          total_points,
+          claimed_points,
+          unclaimed_points,
+          points_last_updated
+        `)
+        .order('"CUSTOMER CODE"', { ascending: true })
+        .range(from, from + batchSize - 1);
+
+      const filteredQuery = applyFiltersToQuery(baseQuery);
+      const { data, error } = await filteredQuery;
+      if (error) throw error;
+
+      const chunk = data || [];
+      allRows.push(...chunk);
+
+      if (chunk.length < batchSize) {
+        break;
+      }
+
+      from += batchSize;
+    }
+
+    return allRows.map(transformCustomerRow);
   };
 
   // Optimized data loading with server-side filtering and pagination
@@ -285,7 +310,7 @@ export default function CustomerDetails() {
   const handleRefreshPoints = async () => {
     setIsRefreshing(true);
     try {
-      const { data: pointsResult, error: pointsError } = await supabase.rpc('refresh_customer_points');
+      const { error: pointsError } = await supabase.rpc('refresh_customer_points');
       if (pointsError) throw pointsError;
 
       const { data: datesResult, error: datesError } = await supabase.rpc('update_parsed_dates');
@@ -293,7 +318,19 @@ export default function CustomerDetails() {
 
       clearCustomerListCache();
       await loadData(); // Reload the data
-      setErrorMessage(`✅ ${pointsResult} ${datesResult}`);
+
+      const datesMessage = String(datesResult || '');
+      const hasDateParsingIssue = /date parsing failed|date\/time field value out of range/i.test(datesMessage);
+      const badDateMatch = datesMessage.match(/"([^"]+)"/);
+      const badDate = badDateMatch ? badDateMatch[1] : null;
+
+      if (hasDateParsingIssue) {
+        setErrorMessage(
+          `✅ Points refreshed. Some sales dates could not be read${badDate ? ` (example: ${badDate})` : ''}. Please use DD/MM/YYYY format (for example 15/10/2025) and refresh again.`
+        );
+      } else {
+        setErrorMessage('✅ Points refreshed successfully.');
+      }
       setTimeout(() => setErrorMessage(''), 5000);
     } catch (error) {
       console.error('Error refreshing points:', error);
@@ -564,6 +601,7 @@ export default function CustomerDetails() {
       <CustomerTable
         filtered={rows}
         fetchAllFilteredRows={fetchAllFilteredRows}
+        fetchFilteredRowsPage={fetchFilteredRowsPage}
         loading={loading}
         currentPage={currentPage}
         setCurrentPage={setCurrentPage}
@@ -582,7 +620,7 @@ export default function CustomerDetails() {
 
       {/* Customer Form Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-slate-900/35 backdrop-blur-[1px] flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center p-6 border-b">
               <h2 className="text-xl font-semibold">
@@ -727,7 +765,7 @@ export default function CustomerDetails() {
 
       {/* Delete Confirmation Modal */}
       {isDeleteConfirmOpen && customerToDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-slate-900/35 backdrop-blur-[1px] flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
             <div className="p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-2">
@@ -762,7 +800,7 @@ export default function CustomerDetails() {
 
       {/* Updated Claim Points Modal - Multiple of 5 */}
       {isClaimModalOpen && customerToClaim && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-slate-900/35 backdrop-blur-[1px] flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
             <div className="p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-2">

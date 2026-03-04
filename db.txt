@@ -1,249 +1,180 @@
--- Jewelry Royalty Program - ROBUST VERSION for Supabase
--- No more "value too long" errors!
+create table public.claim_history (
+  id bigserial not null,
+  "CUSTOMER CODE" text not null,
+  points_claimed numeric(15, 2) not null,
+  claimed_at timestamp with time zone null default now(),
+  claimed_by text null,
+  notes text null,
+  constraint claim_history_pkey primary key (id),
+  constraint fk_claim_customer_code foreign KEY ("CUSTOMER CODE") references sales_records ("CUSTOMER CODE") on delete CASCADE,
+  constraint claim_history_points_claimed_check check ((points_claimed > (0)::numeric))
+) TABLESPACE pg_default;
 
--- Drop existing tables completely
-DROP TABLE IF EXISTS public.customer_points CASCADE;
-DROP TABLE IF EXISTS public.sales_records CASCADE;
-DROP FUNCTION IF EXISTS refresh_customer_points() CASCADE;
-DROP FUNCTION IF EXISTS parse_date_simple(TEXT) CASCADE;
-DROP FUNCTION IF EXISTS claim_customer_points(TEXT, NUMERIC) CASCADE;
-DROP VIEW IF EXISTS customer_summary CASCADE;
-DROP VIEW IF EXISTS customer_points_calculation CASCADE;
-DROP VIEW IF EXISTS update_all_points CASCADE;
+create index IF not exists idx_claim_history_customer_code on public.claim_history using btree ("CUSTOMER CODE") TABLESPACE pg_default;
 
--- Create sales_records table with GENEROUS field sizes
-CREATE TABLE public.sales_records (
-    "CUSTOMER CODE" TEXT NOT NULL,           -- No limit, handles any customer code
-    "CUSTOMER NAME" TEXT,                    -- No limit, handles any name length
-    "HOUSE NAME" TEXT,                       -- No limit, handles any house name
-    "STREET" TEXT,                           -- No limit, handles any street address
-    "PLACE" TEXT,                            -- No limit, handles any place name
-    "PIN CODE" TEXT,                         -- No limit, handles any postal code format
-    "MOBILE" TEXT,                           -- No limit, handles any mobile format
-    "NET WEIGHT" NUMERIC(15,3) DEFAULT 0 CHECK ("NET WEIGHT" >= 0),  -- Large precision for weight
-    "LAST SALES DATE" TEXT,                  -- Keep as TEXT for DD/MM/YYYY format
-    "LAST_SALES_DATE_PARSED" DATE,           -- Parsed date column
-    "CREATED_AT" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    "UPDATED_AT" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    
-    CONSTRAINT sales_records_pkey PRIMARY KEY ("CUSTOMER CODE")
-);
+create index IF not exists idx_claim_history_claimed_at on public.claim_history using btree (claimed_at desc) TABLESPACE pg_default;
+,
+create table public.customer_points (
+  "CUSTOMER CODE" text not null,
+  "TOTAL_POINTS" numeric(15, 2) null default 0,
+  "CLAIMED_POINTS" numeric(15, 2) null default 0,
+  "UNCLAIMED_POINTS" numeric GENERATED ALWAYS as (("TOTAL_POINTS" - "CLAIMED_POINTS")) STORED (15, 2) null,
+  "LAST_UPDATED" timestamp with time zone null default now(),
+  constraint customer_points_pkey primary key ("CUSTOMER CODE"),
+  constraint fk_customer_code foreign KEY ("CUSTOMER CODE") references sales_records ("CUSTOMER CODE") on delete CASCADE,
+  constraint customer_points_CLAIMED_POINTS_check check (("CLAIMED_POINTS" >= (0)::numeric)),
+  constraint customer_points_TOTAL_POINTS_check check (("TOTAL_POINTS" >= (0)::numeric))
+) TABLESPACE pg_default;
 
--- Create customer_points table
-CREATE TABLE public.customer_points (
-    "CUSTOMER CODE" TEXT NOT NULL,
-    "TOTAL_POINTS" NUMERIC(15,2) DEFAULT 0 CHECK ("TOTAL_POINTS" >= 0),
-    "CLAIMED_POINTS" NUMERIC(15,2) DEFAULT 0 CHECK ("CLAIMED_POINTS" >= 0),
-    "UNCLAIMED_POINTS" NUMERIC(15,2) GENERATED ALWAYS AS ("TOTAL_POINTS" - "CLAIMED_POINTS") STORED,
-    "LAST_UPDATED" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    
-    CONSTRAINT customer_points_pkey PRIMARY KEY ("CUSTOMER CODE"),
-    CONSTRAINT fk_customer_code FOREIGN KEY ("CUSTOMER CODE") 
-        REFERENCES public.sales_records ("CUSTOMER CODE") ON DELETE CASCADE,
-    CONSTRAINT chk_claimed_not_exceed_total CHECK ("CLAIMED_POINTS" <= "TOTAL_POINTS")
-);
+create index IF not exists idx_customer_points_last_updated on public.customer_points using btree ("LAST_UPDATED") TABLESPACE pg_default;
+,
+create table public.data_dates (
+  id serial not null,
+  upload_date timestamp with time zone null default (now() AT TIME ZONE 'Asia/Kolkata'::text),
+  data_download_date timestamp with time zone null,
+  file_name text null,
+  records_count integer null default 0,
+  constraint data_dates_pkey primary key (id)
+) TABLESPACE pg_default;
+,
+create table public.sales_records (
+  "CUSTOMER CODE" text not null,
+  "CUSTOMER NAME" text null,
+  "HOUSE NAME" text null,
+  "STREET" text null,
+  "PLACE" text null,
+  "PIN CODE" text null,
+  "MOBILE" text null,
+  "NET WEIGHT" numeric(15, 3) null default 0,
+  "LAST SALES DATE" text null,
+  "LAST_SALES_DATE_PARSED" date null,
+  "CREATED_AT" timestamp with time zone null default now(),
+  "UPDATED_AT" timestamp with time zone null default now(),
+  constraint sales_records_pkey primary key ("CUSTOMER CODE"),
+  constraint sales_records_NET WEIGHT_check check (("NET WEIGHT" >= (0)::numeric))
+) TABLESPACE pg_default;
 
--- Create indexes for performance
-CREATE INDEX idx_sales_records_customer_name ON public.sales_records USING btree ("CUSTOMER NAME");
-CREATE INDEX idx_sales_records_mobile ON public.sales_records USING btree ("MOBILE");
-CREATE INDEX idx_sales_records_place ON public.sales_records USING btree ("PLACE");
-CREATE INDEX idx_sales_records_pin_code ON public.sales_records USING btree ("PIN CODE");
-CREATE INDEX idx_sales_records_last_sales_date ON public.sales_records USING btree ("LAST_SALES_DATE_PARSED");
-CREATE INDEX idx_customer_points_last_updated ON public.customer_points USING btree ("LAST_UPDATED");
+create index IF not exists idx_sales_records_customer_name on public.sales_records using btree ("CUSTOMER NAME") TABLESPACE pg_default;
 
--- Simple function to refresh customer points after CSV import
-CREATE OR REPLACE FUNCTION refresh_customer_points()
-RETURNS TEXT
-LANGUAGE SQL
-AS $$
-    -- Insert new customers with their calculated points
-    INSERT INTO public.customer_points ("CUSTOMER CODE", "TOTAL_POINTS", "CLAIMED_POINTS", "LAST_UPDATED")
-    SELECT 
-        sr."CUSTOMER CODE",
-        FLOOR(COALESCE(SUM(sr."NET WEIGHT"), 0) / 10),  -- 10 grams = 1 point
-        0,
-        NOW()
-    FROM public.sales_records sr
-    WHERE sr."CUSTOMER CODE" NOT IN (SELECT "CUSTOMER CODE" FROM public.customer_points)
-    GROUP BY sr."CUSTOMER CODE"
-    ON CONFLICT ("CUSTOMER CODE") DO NOTHING;
-    
-    -- Update existing customers with recalculated points
-    UPDATE public.customer_points 
-    SET 
-        "TOTAL_POINTS" = points_calc.total_points,
-        "LAST_UPDATED" = NOW()
-    FROM (
-        SELECT 
-            sr."CUSTOMER CODE",
-            FLOOR(COALESCE(SUM(sr."NET WEIGHT"), 0) / 10) as total_points
-        FROM public.sales_records sr 
-        GROUP BY sr."CUSTOMER CODE"
-    ) as points_calc
-    WHERE customer_points."CUSTOMER CODE" = points_calc."CUSTOMER CODE";
-    
-    SELECT 'Points updated successfully for ' || 
-           (SELECT COUNT(*) FROM public.customer_points)::TEXT || 
-           ' customers';
-$$;
+create index IF not exists idx_sales_records_mobile on public.sales_records using btree ("MOBILE") TABLESPACE pg_default;
 
--- Simple function to parse DD/MM/YYYY dates
-CREATE OR REPLACE FUNCTION parse_date_simple(date_text TEXT)
-RETURNS DATE
-LANGUAGE SQL
-IMMUTABLE
-AS $$
-    SELECT CASE 
-        WHEN date_text IS NULL OR TRIM(date_text) = '' THEN NULL
-        WHEN date_text ~ '^[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}$' THEN
-            TO_DATE(TRIM(date_text), 'DD/MM/YYYY')
-        WHEN date_text ~ '^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}$' THEN
-            TO_DATE(TRIM(date_text), 'YYYY-MM-DD')
-        ELSE NULL
-    END
-$$;
+create index IF not exists idx_sales_records_place on public.sales_records using btree ("PLACE") TABLESPACE pg_default;
 
--- Simple function to claim points (for app UI)
-CREATE OR REPLACE FUNCTION claim_customer_points(customer_code TEXT, points_to_claim NUMERIC)
-RETURNS TEXT
-LANGUAGE SQL
-AS $$
-    WITH point_check AS (
-        SELECT 
-            "CUSTOMER CODE",
-            "UNCLAIMED_POINTS"
-        FROM public.customer_points 
-        WHERE "CUSTOMER CODE" = customer_code 
-        AND "UNCLAIMED_POINTS" >= points_to_claim
-        AND points_to_claim > 0
-    ),
-    point_update AS (
-        UPDATE public.customer_points 
-        SET 
-            "CLAIMED_POINTS" = "CLAIMED_POINTS" + points_to_claim,
-            "LAST_UPDATED" = NOW()
-        WHERE "CUSTOMER CODE" IN (SELECT "CUSTOMER CODE" FROM point_check)
-        RETURNING "CUSTOMER CODE"
+create index IF not exists idx_sales_records_pin_code on public.sales_records using btree ("PIN CODE") TABLESPACE pg_default;
+
+create index IF not exists idx_sales_records_last_sales_date on public.sales_records using btree ("LAST_SALES_DATE_PARSED") TABLESPACE pg_default;
+,
+create table public.user_roles (
+  id uuid not null,
+  role public.user_role not null default 'staff'::user_role,
+  created_at timestamp with time zone not null default timezone ('utc'::text, now()),
+  updated_at timestamp with time zone not null default timezone ('utc'::text, now()),
+  constraint user_roles_pkey primary key (id),
+  constraint user_roles_id_fkey foreign KEY (id) references auth.users (id) on delete CASCADE
+) TABLESPACE pg_default;
+
+-- =========================================================
+-- Performance Optimizations
+-- 1) Single RPC for paginated customer list + counts + totals
+-- 2) Search and filter indexes
+-- =========================================================
+
+create extension if not exists pg_trgm;
+
+create index if not exists idx_sales_records_code_trgm
+on public.sales_records using gin ("CUSTOMER CODE" gin_trgm_ops);
+
+create index if not exists idx_sales_records_name_trgm
+on public.sales_records using gin ("CUSTOMER NAME" gin_trgm_ops);
+
+create index if not exists idx_sales_records_mobile_trgm
+on public.sales_records using gin ("MOBILE" gin_trgm_ops);
+
+create index if not exists idx_customer_points_filter_metrics
+on public.customer_points ("UNCLAIMED_POINTS", "CLAIMED_POINTS", "TOTAL_POINTS");
+
+create or replace function public.get_customer_list_data(
+  p_query text default null,
+  p_start_date date default null,
+  p_end_date date default null,
+  p_min_total numeric default null,
+  p_max_total numeric default null,
+  p_min_claimed numeric default null,
+  p_max_claimed numeric default null,
+  p_min_unclaimed numeric default null,
+  p_max_unclaimed numeric default null,
+  p_has_claimed boolean default false,
+  p_has_eligible_claims boolean default false,
+  p_page integer default 1,
+  p_items_per_page integer default 10
+)
+returns jsonb
+language sql
+security definer
+set search_path = public
+as $$
+with filtered as (
+  select
+    "CUSTOMER CODE" as customer_code,
+    "CUSTOMER NAME" as customer_name,
+    "HOUSE NAME" as house_name,
+    "STREET" as street,
+    "PLACE" as place,
+    "PIN CODE" as pin_code,
+    "MOBILE" as mobile,
+    "NET WEIGHT" as net_weight,
+    original_date,
+    parsed_date,
+    total_points,
+    claimed_points,
+    unclaimed_points,
+    points_last_updated
+  from public.customer_summary
+  where
+    (
+      coalesce(p_query, '') = ''
+      or "CUSTOMER CODE" ilike '%' || p_query || '%'
+      or "CUSTOMER NAME" ilike '%' || p_query || '%'
+      or "MOBILE" ilike '%' || p_query || '%'
     )
-    SELECT CASE 
-        WHEN EXISTS (SELECT 1 FROM point_update) 
-        THEN points_to_claim::TEXT || ' points claimed successfully for customer ' || customer_code
-        ELSE 'Failed: Insufficient points or invalid customer ' || customer_code
-    END;
+    and (p_start_date is null or parsed_date >= p_start_date)
+    and (p_end_date is null or parsed_date <= p_end_date)
+    and (p_min_total is null or total_points >= p_min_total)
+    and (p_max_total is null or total_points <= p_max_total)
+    and (p_min_claimed is null or claimed_points >= p_min_claimed)
+    and (p_max_claimed is null or claimed_points <= p_max_claimed)
+    and (p_min_unclaimed is null or unclaimed_points >= p_min_unclaimed)
+    and (p_max_unclaimed is null or unclaimed_points <= p_max_unclaimed)
+    and (not p_has_claimed or claimed_points > 0)
+    and (not p_has_eligible_claims or unclaimed_points >= 5)
+),
+stats as (
+  select
+    count(*)::int as total_count,
+    count(*) filter (where unclaimed_points >= 5)::int as eligible_count,
+    coalesce(sum(total_points), 0) as total_points,
+    coalesce(sum(claimed_points), 0) as total_claimed,
+    coalesce(sum(unclaimed_points), 0) as total_unclaimed
+  from filtered
+),
+paged as (
+  select *
+  from filtered
+  order by customer_code asc
+  offset greatest((coalesce(p_page, 1) - 1) * coalesce(p_items_per_page, 10), 0)
+  limit greatest(coalesce(p_items_per_page, 10), 1)
+)
+select jsonb_build_object(
+  'rows', coalesce((select jsonb_agg(to_jsonb(paged)) from paged), '[]'::jsonb),
+  'total_count', stats.total_count,
+  'eligible_count', stats.eligible_count,
+  'total_points', stats.total_points,
+  'total_claimed', stats.total_claimed,
+  'total_unclaimed', stats.total_unclaimed
+)
+from stats;
 $$;
 
--- Function to update parsed dates (run after CSV import)
-CREATE OR REPLACE FUNCTION update_parsed_dates()
-RETURNS TEXT
-LANGUAGE SQL
-AS $$
-    UPDATE public.sales_records 
-    SET 
-        "LAST_SALES_DATE_PARSED" = parse_date_simple("LAST SALES DATE"),
-        "UPDATED_AT" = NOW();
-    
-    SELECT 'Dates parsed successfully for ' || 
-           (SELECT COUNT(*) FROM public.sales_records WHERE "LAST_SALES_DATE_PARSED" IS NOT NULL)::TEXT || 
-           ' records';
-$$;
-
--- Create a comprehensive view for easy reporting
-CREATE OR REPLACE VIEW customer_summary AS
-SELECT 
-    sr."CUSTOMER CODE",
-    sr."CUSTOMER NAME",
-    sr."HOUSE NAME",
-    sr."STREET",
-    sr."PLACE",
-    sr."PIN CODE",
-    sr."MOBILE",
-    sr."NET WEIGHT",
-    sr."LAST SALES DATE" as original_date,
-    sr."LAST_SALES_DATE_PARSED" as parsed_date,
-    COALESCE(cp."TOTAL_POINTS", 0) as total_points,
-    COALESCE(cp."CLAIMED_POINTS", 0) as claimed_points,
-    COALESCE(cp."UNCLAIMED_POINTS", 0) as unclaimed_points,
-    cp."LAST_UPDATED" as points_last_updated,
-    sr."CREATED_AT",
-    sr."UPDATED_AT"
-FROM public.sales_records sr
-LEFT JOIN public.customer_points cp ON sr."CUSTOMER CODE" = cp."CUSTOMER CODE";
-
--- Enable Row Level Security (RLS) for Supabase
-ALTER TABLE public.sales_records ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.customer_points ENABLE ROW LEVEL SECURITY;
-
--- Create basic policies (adjust based on your auth requirements)
-CREATE POLICY "Enable read access for all users" ON public.sales_records
-    FOR SELECT USING (true);
-
-CREATE POLICY "Enable insert access for all users" ON public.sales_records
-    FOR INSERT WITH CHECK (true);
-
-CREATE POLICY "Enable update access for all users" ON public.sales_records
-    FOR UPDATE USING (true);
-
-CREATE POLICY "Enable read access for all users" ON public.customer_points
-    FOR SELECT USING (true);
-
-CREATE POLICY "Enable insert access for all users" ON public.customer_points
-    FOR INSERT WITH CHECK (true);
-
-CREATE POLICY "Enable update access for all users" ON public.customer_points
-    FOR UPDATE USING (true);
-
--- Add comments
-COMMENT ON TABLE public.sales_records IS 'Customer sales data - Handles any CSV format with unlimited field sizes';
-COMMENT ON TABLE public.customer_points IS 'Loyalty points: 1 point per 10 grams gold - Auto calculated';
-COMMENT ON FUNCTION refresh_customer_points() IS 'Run after CSV import to calculate/update all customer points';
-COMMENT ON FUNCTION claim_customer_points(TEXT, NUMERIC) IS 'Claim points from app UI - returns success/failure message';
-COMMENT ON FUNCTION update_parsed_dates() IS 'Parse DD/MM/YYYY dates after CSV import';
-
-----------------------------------
--- USAGE INSTRUCTIONS FOR SUPABASE
-----------------------------------
-
--- 1. IMPORT YOUR CSV (no more size errors!):
-/*
-COPY public.sales_records ("CUSTOMER CODE", "CUSTOMER NAME", "HOUSE NAME", "STREET", "PLACE", "PIN CODE", "MOBILE", "NET WEIGHT", "LAST SALES DATE")
-FROM '/path/to/your/file.csv'
-WITH (FORMAT csv, HEADER true, DELIMITER ',');
-*/
-
--- 2. AFTER CSV IMPORT, RUN THESE IN ORDER:
-/*
--- Update points for all customers
-SELECT refresh_customer_points();
-
--- Parse all dates from DD/MM/YYYY format  
-SELECT update_parsed_dates();
-*/
-
--- 3. CLAIM POINTS (for app):
-/*
-SELECT claim_customer_points('CUSTOMER001', 5);
-*/
-
--- 4. VIEW ALL DATA:
-/*
-SELECT * FROM customer_summary 
-ORDER BY "CUSTOMER CODE";
-*/
-
--- 5. VIEW SPECIFIC CUSTOMER:
-/*
-SELECT * FROM customer_summary 
-WHERE "CUSTOMER CODE" = 'YOUR_CUSTOMER_CODE';
-*/
-
--- 6. GET POINTS SUMMARY:
-/*
-SELECT 
-    COUNT(*) as total_customers,
-    SUM("TOTAL_POINTS") as total_points_issued,
-    SUM("CLAIMED_POINTS") as total_points_claimed,
-    SUM("UNCLAIMED_POINTS") as total_points_available
-FROM public.customer_points;
-*/
-
-SELECT 'Robust Jewelry Royalty Database created successfully! No more field size errors!' as success_message;
+grant execute on function public.get_customer_list_data(
+  text, date, date, numeric, numeric, numeric, numeric, numeric, numeric, boolean, boolean, integer, integer
+) to anon, authenticated;

@@ -159,6 +159,22 @@ The system accepts various CSV formats with these field mappings:
 
 For technical support or questions about the loyalty program system, please contact the development team.
 
+## One-time admin password reset (temporary)
+
+Use this only as a temporary recovery path, then remove it.
+
+1. Set server-side env vars in your terminal (do not put service role key in frontend code):
+```bash
+SUPABASE_URL=your_supabase_url
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+```
+2. Run:
+```bash
+npm run reset:password:once
+```
+3. Enter the email + new password when prompted.
+4. Delete `scripts/reset-password-once.mjs` and remove `reset:password:once` from `package.json` after recovery.
+
 ---
 
 *Built with ❤️ for efficient customer loyalty management*
