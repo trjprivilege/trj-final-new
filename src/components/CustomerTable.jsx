@@ -134,6 +134,9 @@ export default function CustomerTable({
             }
             .customer-title { font-size: 14px; font-weight: 700; margin-bottom: 2px; color: #1f2937; line-height: 1.2; }
             .stack-line { font-size: 12px; color: #111827; line-height: 1.25; margin: 0; }
+            .stack-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.35; }
+            .stack-label { min-width: 120px; color: #475569; font-weight: 600; white-space: nowrap; }
+            .stack-value { color: #111827; word-break: break-word; }
             .toggle-btn { padding: 8px 14px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; font-size: 13px; cursor: pointer; }
             .toggle-btn.active { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; font-weight: 600; }
             .pager-btn { padding: 8px 12px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; font-size: 13px; cursor: pointer; }
@@ -296,22 +299,31 @@ export default function CustomerTable({
               }
 
               return rows.map(function(customer) {
-                var code = escapeHtml(customer.code);
-                var name = escapeHtml(customer.name);
-                var houseName = clean(customer.houseName);
-                var street = clean(customer.street);
-                var place = clean(customer.place);
-                var pinCode = clean(customer.pinCode);
-                var mobile = escapeHtml(customer.mobile);
-                var addressLine = [houseName, street, place, pinCode].filter(Boolean).join(' ');
-                var safeAddress = escapeHtml(addressLine);
+                var code = escapeHtml(customer.code) || '-';
+                var name = escapeHtml(customer.name) || '-';
+                var houseName = escapeHtml(customer.houseName) || '-';
+                var street = escapeHtml(customer.street) || '-';
+                var place = escapeHtml(customer.place) || '-';
+                var pinCode = escapeHtml(customer.pinCode) || '-';
+                var mobile = escapeHtml(customer.mobile) || '-';
+
+                var row = function(label, value) {
+                  return ''
+                    + '<div class=\"stack-row\">'
+                    + '<span class=\"stack-label\">' + label + ' :</span>'
+                    + '<span class=\"stack-value\">' + value + '</span>'
+                    + '</div>';
+                };
 
                 return ''
                   + '<div class="customer-card">'
-                  + '<div class="customer-title">' + code + '</div>'
-                  + (name ? '<div class="stack-line">' + name + '</div>' : '')
-                  + (safeAddress ? '<div class="stack-line">' + safeAddress + '</div>' : '')
-                  + (mobile ? '<div class="stack-line">' + mobile + '</div>' : '')
+                  + row('Customer ID', code)
+                  + row('Customer Name', name)
+                  + row('House Name', houseName)
+                  + row('Street Name', street)
+                  + row('Place', place)
+                  + row('Pin Code', pinCode)
+                  + row('Mobile No', mobile)
                   + '</div>';
               }).join('');
             }
@@ -825,3 +837,4 @@ export default function CustomerTable({
     </>
   );
 }
+// new
