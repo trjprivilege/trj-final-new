@@ -211,12 +211,16 @@ export default function CustomerDetails() {
     };
   };
 
-  const fetchAllFilteredRows = async () => {
+  const fetchAllFilteredRows = async (onProgress, abortSignal) => {
     const batchSize = 1000;
     let from = 0;
     const allRows = [];
 
     while (true) {
+      if (abortSignal && abortSignal.current) {
+        throw new Error('Export cancelled by user');
+      }
+
       const baseQuery = supabase
         .from('customer_summary')
         .select(`
@@ -244,6 +248,14 @@ export default function CustomerDetails() {
 
       const chunk = data || [];
       allRows.push(...chunk);
+      
+      if (onProgress) {
+        onProgress(allRows.length);
+      }
+      
+      if (abortSignal && abortSignal.current) {
+        throw new Error('Export cancelled by user');
+      }
 
       if (chunk.length < batchSize) {
         break;

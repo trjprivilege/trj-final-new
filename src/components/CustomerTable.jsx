@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Edit, Trash, Award, ChevronLeft, ChevronRight, FileText, Download, ChevronsLeft, ChevronsRight, History } from 'lucide-react';
 import Papa from 'papaparse';
 import ClaimHistoryDialog from './ClaimHistoryDialog';
@@ -26,6 +27,12 @@ export default function CustomerTable({
 }) {
   const [printStyle, setPrintStyle] = useState('table');
   const [preparingAction, setPreparingAction] = useState(null);
+  const [viewMode, setViewMode] = useState('table');
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [printData, setPrintData] = useState(null);
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [loadedCount, setLoadedCount] = useState(0);
+  const abortFetchRef = useRef(false);
 
   // State for claim history dialog
   const [claimHistoryDialog, setClaimHistoryDialog] = useState({
@@ -50,15 +57,17 @@ export default function CustomerTable({
   };
 
   // Use full filtered dataset for printing.
-  const getRowsForPrintReport = async () => {
+  const getRowsForPrintReport = async (onProgress) => {
     if (!fetchAllFilteredRows || filtered.length >= totalFilteredCount) {
+      if (onProgress) onProgress(filtered.length);
       return filtered;
     }
-    return fetchAllFilteredRows();
+    return fetchAllFilteredRows(onProgress, abortFetchRef);
   };
 
   // CSV export should match what is currently visible in the table page.
   const exportToCSV = () => {
+    abortFetchRef.current = false;
     setPreparingAction('csv');
     try {
       const csvData = filtered.map(customer => ({
@@ -93,410 +102,38 @@ export default function CustomerTable({
 
   // Function to print the customer list
   const printCustomerList = async () => {
+    abortFetchRef.current = false;
     setPreparingAction('print');
-    const initialReportRows = filtered;
-    const canFetchPaged = typeof fetchFilteredRowsPage === 'function';
-    const initialPage = currentPage;
-
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
+    setLoadingProgress(0);
+    setLoadedCount(0);
+    try {
+      const data = await getRowsForPrintReport((count) => {
+        setLoadedCount(count);
+        if (totalFilteredCount > 0) {
+          setLoadingProgress(Math.min(100, Math.round((count / totalFilteredCount) * 100)));
+        }
+      });
+      setPrintData(data);
+      setIsPrinting(true);
+      setTimeout(() => {
+        window.print();
+        setIsPrinting(false);
+        setPrintData(null);
+      }, 500);
+    } catch (error) {
+      if (error.message === 'Export cancelled by user') {
+        console.log("Print cancelled by user");
+      } else {
+        console.error("Print failed:", error);
+      }
+    } finally {
       setPreparingAction(null);
-      return;
     }
+  };
 
-    const serializedReportRows = JSON.stringify(initialReportRows).replace(/</g, '\\u003c');
-    const pageSizeOptionsMarkup = pageSizeOptions
-      .map((size) => `<option value="${size}" ${size === itemsPerPage ? 'selected' : ''}>${size}</option>`)
-      .join('');
-    
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>Customer Loyalty Program - Report</title>
-          <style>
-            body { font-family: Arial, sans-serif; margin: 0; padding: 15px; }
-            table { border-collapse: collapse; width: 100%; font-size: 12px; }
-            th, td { border: 1px solid #ddd; padding: 6px; text-align: left; }
-            th { background-color: #f2f2f2; font-weight: bold; }
-            .header { text-align: center; margin-bottom: 20px; }
-            .summary { margin-bottom: 20px; }
-            .rules { background: #f0f8ff; padding: 10px; margin-bottom: 20px; border-left: 4px solid #007bff; }
-            .stacked-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
-            .customer-card {
-              border: 1px solid #ddd;
-              border-radius: 8px;
-              padding: 10px;
-              page-break-inside: avoid;
-              box-sizing: border-box;
-              display: flex;
-              flex-direction: column;
-              gap: 6px;
-            }
-            .customer-title { font-size: 14px; font-weight: 700; margin-bottom: 2px; color: #1f2937; line-height: 1.2; }
-            .stack-line { font-size: 12px; color: #111827; line-height: 1.25; margin: 0; }
-            .stack-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.35; }
-            .stack-label { min-width: 120px; color: #475569; font-weight: 600; white-space: nowrap; }
-            .stack-value { color: #111827; word-break: break-word; }
-            .toggle-btn { padding: 8px 14px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; font-size: 13px; cursor: pointer; }
-            .toggle-btn.active { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; font-weight: 600; }
-            .pager-btn { padding: 8px 12px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; font-size: 13px; cursor: pointer; }
-            .pager-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-            .pager-select { padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; background: #fff; }
-            .pagination-wrap { display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
-            @media print {
-              .no-print, .no-print * {
-                display: none !important;
-                visibility: hidden !important;
-              }
-            }
-            @media (max-width: 1100px) {
-              .stacked-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            }
-            @media (max-width: 700px) {
-              .stacked-grid { grid-template-columns: 1fr; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h1>Customer Loyalty Program Report</h1>
-            <p>Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
-          </div>
-          
-          <div class="rules">
-            <h3>Updated Claiming Rules:</h3>
-            <p>• Claims must be in multiples of 5 points</p>
-            <p>• Minimum eligibility: 5 points (50 grams of gold)</p>
-            <p>• Points Formula: 1 point per 10 grams of gold weight</p>
-          </div>
-          
-          <div class="summary">
-            <p><strong>Total Customers:</strong> ${totalFilteredCount}</p>
-            <p><strong>Eligible for Claims (≥5 points):</strong> ${eligibleCustomersCount}</p>
-            <p><strong>Total Points Issued:</strong> ${totalStatistics.totalPoints}</p>
-            <p><strong>Total Points Claimed:</strong> ${totalStatistics.totalClaimed}</p>
-            <p><strong>Total Points Available:</strong> ${totalStatistics.totalUnclaimed}</p>
-          </div>
-          
-          <div id="print-controls" class="no-print" style="margin-bottom: 20px; display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap;">
-            <button id="btn-table" class="toggle-btn ${printStyle === 'table' ? 'active' : ''}" onclick="setReportStyle('table')">Table</button>
-            <button id="btn-stacked" class="toggle-btn ${printStyle === 'stacked' ? 'active' : ''}" onclick="setReportStyle('stacked')">Stacked</button>
-            <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px;">Print Report</button>
-          </div>
-
-          <div class="pagination-wrap no-print">
-            <span style="font-size: 13px; color: #4b5563;">Show</span>
-            <select id="page-size-select" class="pager-select" onchange="changePageSize()">
-              ${pageSizeOptionsMarkup}
-            </select>
-            <span style="font-size: 13px; color: #4b5563;">per page</span>
-            <button id="first-page-btn" class="pager-btn" onclick="goToFirstPage()">First</button>
-            <button id="prev-page-btn" class="pager-btn" onclick="goToPrevPage()">Prev</button>
-            <span id="page-info" style="font-size: 13px; color: #111827;"></span>
-            <button id="next-page-btn" class="pager-btn" onclick="goToNextPage()">Next</button>
-            <button id="last-page-btn" class="pager-btn" onclick="goToLastPage()">Last</button>
-          </div>
-
-          <div id="load-status" class="no-print" style="margin-bottom: 12px; text-align: center; font-size: 13px; color: #475569;"></div>
-          
-          <div id="table-report" style="display:${printStyle === 'table' ? 'block' : 'none'};">
-            <table>
-              <thead>
-                <tr>
-                  <th>Code</th>
-                  <th>Customer Name</th>
-                  <th>Place</th>
-                  <th>Mobile</th>
-                  <th>Total Points</th>
-                  <th>Claimed</th>
-                  <th>Unclaimed</th>
-                  <th>Max Claimable</th>
-                  <th>Last Sales Date</th>
-                </tr>
-              </thead>
-              <tbody id="table-report-body"></tbody>
-            </table>
-          </div>
-          <div id="stacked-report" class="stacked-grid" style="display:${printStyle === 'stacked' ? 'grid' : 'none'};"></div>
-          
-          <div style="margin-top: 20px; font-size: 10px; color: #666;">
-            <p>Points Formula: 1 point per 10 grams of gold weight</p>
-            <p>Claims must be in multiples of 5 points | Minimum eligibility: 5 points</p>
-            <p>Report generated from Customer Loyalty Management System</p>
-          </div>
-          <script>
-            var printControls = document.getElementById('print-controls');
-            var initialRows = ${serializedReportRows};
-            var totalRows = ${totalFilteredCount};
-            var reportStyle = '${printStyle}';
-            var loadError = '';
-            var loadingPage = false;
-            var currentPage = ${initialPage};
-            var pageSizeSelect = document.getElementById('page-size-select');
-            var pageSize = Number(pageSizeSelect.value) || ${itemsPerPage};
-            var pageCache = {};
-            pageCache[currentPage] = initialRows;
-            var tableReportBody = document.getElementById('table-report-body');
-            var stackedReport = document.getElementById('stacked-report');
-            var loadStatus = document.getElementById('load-status');
-            var pageInfo = document.getElementById('page-info');
-            var firstPageBtn = document.getElementById('first-page-btn');
-            var prevPageBtn = document.getElementById('prev-page-btn');
-            var nextPageBtn = document.getElementById('next-page-btn');
-            var lastPageBtn = document.getElementById('last-page-btn');
-
-            function clean(value) {
-              if (value === null || value === undefined) return '';
-              return String(value).trim();
-            }
-
-            function escapeHtml(value) {
-              return clean(value)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-            }
-
-            function getMaxClaimable(unclaimedPoints) {
-              var points = Number(unclaimedPoints) || 0;
-              return Math.floor(points / 5) * 5;
-            }
-
-            function getTotalPages() {
-              return Math.max(1, Math.ceil(totalRows / pageSize));
-            }
-
-            function getPagedRows() {
-              return pageCache[currentPage] || [];
-            }
-
-            function renderTableRows(rows) {
-              if (!rows.length) {
-                return '<tr><td colspan="9" style="text-align:center; padding: 20px;">No customers found.</td></tr>';
-              }
-
-              return rows.map(function(customer) {
-                return ''
-                  + '<tr>'
-                  + '<td>' + escapeHtml(customer.code) + '</td>'
-                  + '<td>' + escapeHtml(customer.name) + '</td>'
-                  + '<td>' + escapeHtml(customer.place) + '</td>'
-                  + '<td>' + escapeHtml(customer.mobile) + '</td>'
-                  + '<td>' + (Number(customer.total) || 0) + '</td>'
-                  + '<td>' + (Number(customer.claimed) || 0) + '</td>'
-                  + '<td>' + (Number(customer.unclaimed) || 0) + '</td>'
-                  + '<td>' + getMaxClaimable(customer.unclaimed) + '</td>'
-                  + '<td>' + escapeHtml(customer.lastSalesDate) + '</td>'
-                  + '</tr>';
-              }).join('');
-            }
-
-            function renderStackedRows(rows) {
-              if (!rows.length) {
-                return '<div style="font-size: 13px; color: #4b5563;">No customers found.</div>';
-              }
-
-              return rows.map(function(customer) {
-                var code = escapeHtml(customer.code) || '-';
-                var name = escapeHtml(customer.name) || '-';
-                var houseName = escapeHtml(customer.houseName) || '-';
-                var street = escapeHtml(customer.street) || '-';
-                var place = escapeHtml(customer.place) || '-';
-                var pinCode = escapeHtml(customer.pinCode) || '-';
-                var mobile = escapeHtml(customer.mobile) || '-';
-
-                var row = function(label, value) {
-                  return ''
-                    + '<div class=\"stack-row\">'
-                    + '<span class=\"stack-label\">' + label + ' :</span>'
-                    + '<span class=\"stack-value\">' + value + '</span>'
-                    + '</div>';
-                };
-
-                return ''
-                  + '<div class="customer-card">'
-                  + row('Customer ID', code)
-                  + row('Customer Name', name)
-                  + row('House Name', houseName)
-                  + row('Street Name', street)
-                  + row('Place', place)
-                  + row('Pin Code', pinCode)
-                  + row('Mobile No', mobile)
-                  + '</div>';
-              }).join('');
-            }
-
-            function setReportStyle(style) {
-              reportStyle = style;
-              var table = document.getElementById('table-report');
-              var stacked = document.getElementById('stacked-report');
-              var btnTable = document.getElementById('btn-table');
-              var btnStacked = document.getElementById('btn-stacked');
-
-              if (style === 'table') {
-                table.style.display = 'block';
-                stacked.style.display = 'none';
-                btnTable.classList.add('active');
-                btnStacked.classList.remove('active');
-              } else {
-                table.style.display = 'none';
-                stacked.style.display = 'grid';
-                btnTable.classList.remove('active');
-                btnStacked.classList.add('active');
-              }
-            }
-
-            function updatePagination() {
-              var totalPages = getTotalPages();
-              pageInfo.textContent = 'Page ' + currentPage + ' of ' + totalPages;
-              firstPageBtn.disabled = currentPage === 1;
-              prevPageBtn.disabled = currentPage === 1;
-              nextPageBtn.disabled = currentPage === totalPages;
-              lastPageBtn.disabled = currentPage === totalPages;
-            }
-
-            function updateLoadStatus() {
-              if (!loadStatus) return;
-              if (loadingPage) {
-                loadStatus.textContent = 'Loading page ' + currentPage + '...';
-                return;
-              }
-              if (loadError) {
-                loadStatus.textContent = loadError;
-                return;
-              }
-              loadStatus.textContent = 'Showing page ' + currentPage + ' of ' + getTotalPages() + '.';
-            }
-
-            function renderReportPage() {
-              var pageNotLoadedYet = !pageCache[currentPage];
-              if (pageNotLoadedYet || (loadingPage && !getPagedRows().length)) {
-                tableReportBody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 20px;">Loading this page...</td></tr>';
-                stackedReport.innerHTML = '<div style="font-size: 13px; color: #4b5563;">Loading this page...</div>';
-                setReportStyle(reportStyle);
-                updatePagination();
-                updateLoadStatus();
-                return;
-              }
-
-              var rows = getPagedRows();
-              tableReportBody.innerHTML = renderTableRows(rows);
-              stackedReport.innerHTML = renderStackedRows(rows);
-              setReportStyle(reportStyle);
-              updatePagination();
-              updateLoadStatus();
-            }
-
-            async function loadPageData(page) {
-              if (pageCache[page]) return;
-              if (typeof window.__fetchPageData !== 'function') {
-                loadError = 'Page data source is unavailable. Try reopening print preview.';
-                updateLoadStatus();
-                return;
-              }
-
-              loadingPage = true;
-              loadError = '';
-              renderReportPage();
-
-              try {
-                var result = await window.__fetchPageData(page, pageSize);
-                var rows = (result && Array.isArray(result.rows)) ? result.rows : [];
-                if (result && Number(result.totalCount)) {
-                  totalRows = Number(result.totalCount);
-                }
-                pageCache[page] = rows;
-              } catch (err) {
-                loadError = 'Failed to load this page. Please try again.';
-              } finally {
-                loadingPage = false;
-                renderReportPage();
-              }
-            }
-
-            function goToPage(page) {
-              var totalPages = getTotalPages();
-              currentPage = Math.max(1, Math.min(totalPages, page));
-              if (!pageCache[currentPage]) {
-                loadPageData(currentPage);
-                return;
-              }
-              renderReportPage();
-            }
-
-            function goToFirstPage() {
-              goToPage(1);
-            }
-
-            function goToPrevPage() {
-              goToPage(currentPage - 1);
-            }
-
-            function goToNextPage() {
-              goToPage(currentPage + 1);
-            }
-
-            function goToLastPage() {
-              goToPage(getTotalPages());
-            }
-
-            function changePageSize() {
-              pageSize = Number(pageSizeSelect.value) || ${itemsPerPage};
-              currentPage = 1;
-              pageCache = {};
-              loadError = '';
-              loadPageData(1);
-            }
-
-            function hidePrintControls() {
-              if (printControls) {
-                printControls.style.display = 'none';
-              }
-            }
-
-            function showPrintControls() {
-              if (printControls) {
-                printControls.style.display = 'flex';
-              }
-            }
-
-            window.addEventListener('beforeprint', hidePrintControls);
-            window.addEventListener('afterprint', showPrintControls);
-            window.goToFirstPage = goToFirstPage;
-            window.goToPrevPage = goToPrevPage;
-            window.goToNextPage = goToNextPage;
-            window.goToLastPage = goToLastPage;
-            window.changePageSize = changePageSize;
-            window.setReportStyle = setReportStyle;
-            renderReportPage();
-          </script>
-        </body>
-      </html>
-    `);
-    
-    printWindow.document.close();
-    printWindow.focus();
+  const cancelPreparation = () => {
+    abortFetchRef.current = true;
     setPreparingAction(null);
-
-    if (canFetchPaged) {
-      printWindow.__fetchPageData = async (page, perPage) => {
-        const pageData = await fetchFilteredRowsPage(page, perPage);
-        return {
-          rows: pageData?.rows || [],
-          totalCount: pageData?.totalCount || totalFilteredCount
-        };
-      };
-    } else if (fetchAllFilteredRows && filtered.length < totalFilteredCount) {
-      printWindow.__fetchPageData = async () => {
-        const allRows = await getRowsForPrintReport();
-        return {
-          rows: allRows,
-          totalCount: allRows.length
-        };
-      };
-    }
   };
 
   // Helper function to get the maximum claimable points (fallback if not provided)
@@ -522,10 +159,95 @@ export default function CustomerTable({
 
   return (
     <>
+      {/* Full screen loader overlay */}
+      {(isPreparingReport || isPrinting) && createPortal(
+        <div className="fixed inset-0 bg-slate-900/50 z-[9999] flex flex-col items-center justify-center p-4 print:hidden backdrop-blur-md transition-all duration-300">
+          <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full border border-gray-100 transform transition-all scale-100 relative">
+            {preparingAction === 'print' && !isPrinting && (
+              <button 
+                onClick={cancelPreparation}
+                className="absolute top-4 right-4 text-gray-400 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-full transition-colors"
+                title="Cancel preparation"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+              </button>
+            )}
+            <div className="relative mb-8 mt-2">
+              {preparingAction === 'print' && totalFilteredCount > 0 && !isPrinting ? (
+                <div className="relative w-32 h-32 flex items-center justify-center">
+                  <svg className="transform -rotate-90 w-32 h-32 drop-shadow-md" viewBox="0 0 100 100">
+                    <circle cx="50" cy="50" r="44" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-blue-50" />
+                    <circle cx="50" cy="50" r="44" stroke="currentColor" strokeWidth="8" fill="transparent"
+                      strokeDasharray={2 * Math.PI * 44}
+                      strokeDashoffset={2 * Math.PI * 44 - (loadingProgress / 100) * 2 * Math.PI * 44}
+                      strokeLinecap="round"
+                      className="text-blue-600 transition-all duration-300 ease-out" />
+                  </svg>
+                  <div className="absolute flex flex-col items-center justify-center">
+                    <span className="text-3xl font-extrabold text-slate-800 tracking-tight">{loadingProgress}%</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="relative w-24 h-24 flex items-center justify-center">
+                  <div className="animate-spin rounded-full h-24 w-24 border-t-4 border-b-4 border-blue-600 border-l-transparent border-r-transparent"></div>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="h-12 w-12 bg-blue-50 rounded-full flex items-center justify-center shadow-inner">
+                      <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-3 text-center tracking-tight">
+              {preparingAction === 'csv' ? 'Exporting CSV...' : isPrinting ? 'Opening Print Dialog' : 'Preparing Print...'}
+            </h2>
+            <p className="text-gray-500 text-sm text-center font-medium leading-relaxed px-4">
+              {preparingAction === 'csv' 
+                ? 'Gathering and formatting your data' 
+                : isPrinting 
+                  ? 'Your document is ready to print!' 
+                  : 'Fetching data and formatting layout. This might take a moment.'}
+            </p>
+            {preparingAction === 'print' && !isPrinting && totalFilteredCount > 0 && (
+              <div className="w-full mt-6 bg-blue-50/80 text-blue-700 py-3 px-4 rounded-xl flex items-center justify-center gap-3 border border-blue-100 shadow-sm">
+                <svg className="w-5 h-5 animate-pulse text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                <span className="text-sm font-bold tracking-wide">
+                  Loaded {formatNumber(loadedCount)} / {formatNumber(totalFilteredCount)}
+                </span>
+              </div>
+            )}
+            {preparingAction === 'print' && !isPrinting && (
+              <button
+                onClick={cancelPreparation}
+                className="mt-6 text-sm font-semibold text-gray-400 hover:text-gray-600 underline underline-offset-4 transition-colors"
+              >
+                Cancel Fetching
+              </button>
+            )}
+          </div>
+        </div>,
+        document.body
+      )}
+
       <div className="flex justify-between items-center mb-4">
-        <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
           <h3 className="text-lg font-medium">Customer List</h3>
           <span className="text-sm text-gray-500">{formatNumber(totalFilteredCount)} records found</span>
+          
+          <div className="flex bg-slate-100 p-1 rounded-lg">
+            <button
+              onClick={() => setViewMode('table')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${viewMode === 'table' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              Table View
+            </button>
+            <button
+              onClick={() => setViewMode('stacked')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${viewMode === 'stacked' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              Stacked View
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -567,8 +289,10 @@ export default function CustomerTable({
         </div>
       </div>
 
-      {/* Desktop Table */}
-      <div className="hidden md:block overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+      {/* Content Area - conditional render based on viewMode */}
+      {viewMode === 'table' ? (
+      
+      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
         <table className="min-w-full border-separate border-spacing-0 text-sm">
           <thead className="bg-slate-50 sticky top-0 z-10">
             <tr>
@@ -666,105 +390,95 @@ export default function CustomerTable({
         </table>
       </div>
 
-      {/* Mobile Cards */}
-      <div className="block md:hidden space-y-4">
-        {loading ? (
-          <div className="flex items-center justify-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-3"></div>
-            <span className="text-gray-500">Loading customers...</span>
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">
-            No customers found matching your criteria.
-          </div>
-        ) : (
-          filtered.map((customer, index) => {
-            const maxClaimable = getMaxClaimablePointsFallback(customer.unclaimed || 0);
-            const eligible = isEligibleForClaimsFallback(customer.unclaimed || 0);
-            
-            return (
-              <div key={customer.code} className="bg-white border rounded-lg p-4 shadow-sm">
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <h3 className="text-base font-semibold">{customer.name || 'Unnamed Customer'}</h3>
-                    <p className="text-sm text-gray-500">{formatNumber(customer.code)}</p>
-                    <p className="text-xs text-gray-400">{customer.place || ''} • {customer.mobile || ''}</p>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+          {loading ? (
+            <div className="col-span-full flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-3"></div>
+              <span className="text-gray-500">Loading customers...</span>
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="col-span-full text-center py-8 text-gray-500">
+              No customers found matching your criteria.
+            </div>
+          ) : (
+            filtered.map((customer, index) => {
+              const maxClaimable = getMaxClaimablePointsFallback(customer.unclaimed || 0);
+              const eligible = isEligibleForClaimsFallback(customer.unclaimed || 0);
+              
+              return (
+                <div key={customer.code} className="bg-white border border-gray-200 rounded-lg shadow-sm hover:shadow transition-shadow duration-200 flex flex-col h-full">
+                  <div className="p-3 border-b border-gray-100 flex justify-between items-start">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 leading-tight">{customer.name || 'Unnamed Customer'}</h3>
+                      <div className="text-xs text-slate-500 font-mono mt-0.5">{customer.code}</div>
+                    </div>
+                    {eligible ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700">Eligible</span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-600">Not Eligible</span>
+                    )}
                   </div>
-                  <div className="flex items-center gap-1">
-                    {eligible && (
-                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                        <Award className="w-3 h-3 mr-1" />
-                        Eligible
+                  
+                  <div className="p-3 flex-1 flex flex-col gap-2">
+                    <div className="flex justify-between text-xs text-slate-600">
+                      <span className="truncate flex items-center">
+                        <svg className="w-3 h-3 mr-1 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                        {customer.place || '-'}
                       </span>
-                    )}
+                      <span className="flex items-center">
+                        <svg className="w-3 h-3 mr-1 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
+                        {customer.mobile || '-'}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-1 mt-1">
+                      <div className="flex-1 bg-slate-50 p-1.5 rounded text-center">
+                        <div className="text-[9px] text-slate-500 uppercase leading-none mb-1">Total</div>
+                        <div className="text-xs font-semibold text-slate-800">{formatNumber(customer.total || 0)}</div>
+                      </div>
+                      <div className="flex-1 bg-blue-50 p-1.5 rounded text-center">
+                        <div className="text-[9px] text-blue-600 uppercase leading-none mb-1">Claimed</div>
+                        <div className="text-xs font-semibold text-blue-700">{formatNumber(customer.claimed || 0)}</div>
+                      </div>
+                      <div className="flex-1 bg-emerald-50 p-1.5 rounded text-center">
+                        <div className="text-[9px] text-emerald-700 uppercase leading-none mb-1">Unclaim</div>
+                        <div className="text-xs font-semibold text-emerald-700">{formatNumber(customer.unclaimed || 0)}</div>
+                      </div>
+                      <div className="flex-1 bg-purple-50 p-1.5 rounded text-center">
+                        <div className="text-[9px] text-purple-600 uppercase leading-none mb-1">Max</div>
+                        <div className="text-xs font-semibold text-purple-700">{formatNumber(maxClaimable)}</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-3 text-sm mb-3">
-                  <div>
-                    <p className="text-gray-500">Total Points</p>
-                    <p className="font-medium">{formatNumber(customer.total || 0)}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Claimed</p>
-                    <p className="font-medium text-blue-600">{formatNumber(customer.claimed || 0)}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Unclaimed</p>
-                    <p className={`font-medium ${eligible ? 'text-green-600' : 'text-gray-600'}`}>
-                      {formatNumber(customer.unclaimed || 0)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Max Claimable</p>
-                    <p className={`font-medium ${maxClaimable > 0 ? 'text-purple-600' : 'text-gray-400'}`}>
-                      {formatNumber(maxClaimable)}
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="flex justify-between items-center">
-                  <div className="text-xs text-gray-500">
-                    Last Sale: {customer.lastSalesDate || 'N/A'}
-                  </div>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => handleEditCustomer(customer)}
-                      className="p-2 text-blue-600 hover:bg-blue-50 rounded"
-                      title="Edit"
-                    >
-                      <Edit className="w-4 h-4" />
-                    </button>
-                    {eligible && (
-                      <button
-                        onClick={() => handleClaimClick(customer)}
-                        className="p-2 text-green-600 hover:bg-green-50 rounded"
-                        title={`Claim Points (Max: ${maxClaimable})`}
-                      >
-                        <Award className="w-4 h-4" />
+                  
+                  <div className="px-3 py-2 bg-slate-50 border-t border-slate-100 flex justify-between items-center mt-auto">
+                    <div className="text-[10px] text-slate-500">
+                      Last Sale: {customer.lastSalesDate || 'N/A'}
+                    </div>
+                    <div className="flex gap-1">
+                      <button onClick={() => handleEditCustomer(customer)} className="p-1 text-blue-600 hover:bg-blue-100 rounded transition-colors" title="Edit Customer">
+                        <Edit className="w-3.5 h-3.5" />
                       </button>
-                    )}
-                    <button
-                      onClick={() => handleClaimHistoryClick(customer)}
-                      className="p-2 text-purple-600 hover:bg-purple-50 rounded"
-                      title="View Claim History"
-                    >
-                      <History className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteClick(customer)}
-                      className="p-2 text-red-600 hover:bg-red-50 rounded"
-                      title="Delete"
-                    >
-                      <Trash className="w-4 h-4" />
-                    </button>
+                      {eligible && (
+                        <button onClick={() => handleClaimClick(customer)} className="p-1 text-emerald-600 hover:bg-emerald-100 rounded transition-colors" title={`Claim Points (Max: ${maxClaimable})`}>
+                          <Award className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button onClick={() => handleClaimHistoryClick(customer)} className="p-1 text-purple-600 hover:bg-purple-100 rounded transition-colors" title="View Claim History">
+                        <History className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => handleDeleteClick(customer)} className="p-1 text-red-600 hover:bg-red-100 rounded transition-colors" title="Delete Customer">
+                        <Trash className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })
-        )}
-      </div>
+              );
+            })
+          )}
+        </div>
+      )}
 
       {/* Pagination */}
       {totalPages > 1 && (
@@ -834,6 +548,86 @@ export default function CustomerTable({
         isOpen={claimHistoryDialog.isOpen}
         onClose={closeClaimHistoryDialog}
       />
+      {/* Hidden Print Container */}
+      {isPrinting && printData && createPortal(
+        <div id="print-root" className="hidden print:block w-full bg-white text-black p-8" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
+          
+          <div className="text-center mb-6 border-b-2 border-black pb-4">
+            <h1 className="text-2xl font-bold uppercase tracking-wider mb-2">Customer Loyalty Program Report</h1>
+            <p className="text-sm">Generated on {new Date().toLocaleDateString()} at {new Date().toLocaleTimeString()}</p>
+          </div>
+          
+          <div className="mb-6 flex justify-between text-sm max-w-4xl">
+            <div>
+              <span className="font-bold">Total Customers:</span> {formatNumber(totalFilteredCount)}
+            </div>
+            <div>
+              <span className="font-bold">Eligible for Claims:</span> {formatNumber(eligibleCustomersCount)}
+            </div>
+            <div>
+              <span className="font-bold">Total Points:</span> {formatNumber(totalStatistics.totalPoints)}
+            </div>
+            <div>
+              <span className="font-bold">Total Available:</span> {formatNumber(totalStatistics.totalUnclaimed)}
+            </div>
+          </div>
+
+          {viewMode === 'table' ? (
+            <table className="w-full text-left text-xs border-collapse border border-black">
+              <thead>
+                <tr className="bg-gray-100">
+                  <th className="border border-black p-2 font-bold">Code</th>
+                  <th className="border border-black p-2 font-bold">Name</th>
+                  <th className="border border-black p-2 font-bold">Place</th>
+                  <th className="border border-black p-2 font-bold">Mobile</th>
+                  <th className="border border-black p-2 font-bold text-right">Total Points</th>
+                  <th className="border border-black p-2 font-bold text-right">Claimed</th>
+                  <th className="border border-black p-2 font-bold text-right">Unclaimed</th>
+                  <th className="border border-black p-2 font-bold text-right">Max Claimable</th>
+                  <th className="border border-black p-2 font-bold">Last Sales Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {printData.map((c, i) => (
+                  <tr key={c.code || i} className="break-inside-avoid" style={{ pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+                    <td className="border border-black p-2">{c.code}</td>
+                    <td className="border border-black p-2">{c.name || '-'}</td>
+                    <td className="border border-black p-2">{c.place || '-'}</td>
+                    <td className="border border-black p-2">{c.mobile || '-'}</td>
+                    <td className="border border-black p-2 text-right">{formatNumber(c.total)}</td>
+                    <td className="border border-black p-2 text-right">{formatNumber(c.claimed)}</td>
+                    <td className="border border-black p-2 text-right font-bold">{formatNumber(c.unclaimed)}</td>
+                    <td className="border border-black p-2 text-right">{formatNumber(getMaxClaimablePointsFallback(c.unclaimed))}</td>
+                    <td className="border border-black p-2">{c.lastSalesDate || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="block w-full">
+              {printData.map((c, i) => (
+                <div key={c.code || i} className="inline-block w-[48%] lg:w-[31%] align-top m-[1%] border border-black p-4 text-xs" style={{ pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+                  <div className="flex justify-between border-b border-gray-400 pb-2 mb-2">
+                    <span className="font-bold text-sm">{c.name || 'Unnamed Customer'}</span>
+                    <span className="font-mono">{c.code}</span>
+                  </div>
+                  <div className="space-y-1 mb-3">
+                    <div><span className="font-bold mr-1">House Name:</span> {c.houseName || '-'}</div>
+                    <div><span className="font-bold mr-1">Street Name:</span> {c.street || '-'}</div>
+                    <div><span className="font-bold mr-1">Place:</span> {c.place || '-'}</div>
+                    <div><span className="font-bold mr-1">Pin Code:</span> {c.pinCode || '-'}</div>
+                    <div><span className="font-bold mr-1">Mobile:</span> {c.mobile || '-'}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          
+          <div className="mt-8 text-xs text-center border-t border-black pt-4">
+            <p>Report generated from Customer Loyalty Management System</p>
+          </div>
+        </div>, document.body
+      )}
     </>
   );
 }
