@@ -211,10 +211,10 @@ export default function CustomerDetails() {
     };
   };
 
-  const fetchAllFilteredRows = async (onProgress, abortSignal) => {
+  const fetchAllFilteredRows = async (onProgress, abortSignal, maxLimit = null) => {
     const batchSize = 1000;
     let from = 0;
-    const allRows = [];
+    let allRows = [];
 
     while (true) {
       if (abortSignal && abortSignal.current) {
@@ -249,6 +249,10 @@ export default function CustomerDetails() {
       const chunk = data || [];
       allRows.push(...chunk);
       
+      if (maxLimit && allRows.length > maxLimit) {
+        allRows = allRows.slice(0, maxLimit);
+      }
+      
       if (onProgress) {
         onProgress(allRows.length);
       }
@@ -257,7 +261,7 @@ export default function CustomerDetails() {
         throw new Error('Export cancelled by user');
       }
 
-      if (chunk.length < batchSize) {
+      if (chunk.length < batchSize || (maxLimit && allRows.length >= maxLimit)) {
         break;
       }
 
