@@ -8,6 +8,15 @@ import ClaimHistoryDialog from './ClaimHistoryDialog';
 
 const pageSizeOptions = [10, 25, 50, 100, 500, 1000];
 
+const formatDateDDMMYYYY = (dateStr) => {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return dateStr;
+};
+
 export default function CustomerTable({
   filtered,
   fetchAllFilteredRows,
@@ -104,6 +113,8 @@ export default function CustomerTable({
           'PIN Code': customer.pinCode || '',
           'Mobile': customer.mobile || '',
           'Last Sales Date': customer.lastSalesDate || '',
+          'Date of Birth': formatDateDDMMYYYY(customer.dob),
+          'Wedding Anniversary': formatDateDDMMYYYY(customer.anniversary),
           'Total Points': customer.total || 0,
           'Claimed Points': customer.claimed || 0,
           'Unclaimed Points': customer.unclaimed || 0,
@@ -158,7 +169,7 @@ export default function CustomerTable({
 
       const doc = new jsPDF({ orientation: 'landscape' });
       const tableColumn = [
-        "Code", "Name", "Place", "Mobile", "Total Pts", "Claimed", "Unclaimed", "Max Claimable", "Last Sale Date"
+        "Code", "Name", "Place", "Mobile", "DOB", "Anniv.", "Total Pts", "Claimed", "Unclaimed", "Max Claimable", "Last Sale Date"
       ];
       
       const tableRows = data.map(c => [
@@ -166,6 +177,8 @@ export default function CustomerTable({
         c.name || '-',
         c.place || '-',
         c.mobile || '-',
+        formatDateDDMMYYYY(c.dob) || '-',
+        formatDateDDMMYYYY(c.anniversary) || '-',
         formatNumber(c.total),
         formatNumber(c.claimed),
         formatNumber(c.unclaimed),
@@ -366,6 +379,8 @@ export default function CustomerTable({
               <th className="px-3 py-3 text-left font-semibold text-slate-700 border-b border-slate-200 border-r border-slate-200">Name</th>
               <th className="px-3 py-3 text-left font-semibold text-slate-700 border-b border-slate-200 border-r border-slate-200">Place</th>
               <th className="px-3 py-3 text-left font-semibold text-slate-700 border-b border-slate-200 border-r border-slate-200">Mobile</th>
+              <th className="px-3 py-3 text-left font-semibold text-slate-700 border-b border-slate-200 border-r border-slate-200">DOB</th>
+              <th className="px-3 py-3 text-left font-semibold text-slate-700 border-b border-slate-200 border-r border-slate-200">Anniversary</th>
               <th className="px-3 py-3 text-right font-semibold text-slate-700 border-b border-slate-200 border-r border-slate-200">Total Points</th>
               <th className="px-3 py-3 text-right font-semibold text-slate-700 border-b border-slate-200 border-r border-slate-200">Claimed</th>
               <th className="px-3 py-3 text-right font-semibold text-slate-700 border-b border-slate-200 border-r border-slate-200">Unclaimed</th>
@@ -401,6 +416,8 @@ export default function CustomerTable({
                     <td className="px-3 py-2.5 whitespace-nowrap border-b border-slate-100 border-r border-slate-100">{customer.name || '-'}</td>
                     <td className="px-3 py-2.5 whitespace-nowrap border-b border-slate-100 border-r border-slate-100">{customer.place || '-'}</td>
                     <td className="px-3 py-2.5 whitespace-nowrap border-b border-slate-100 border-r border-slate-100">{customer.mobile || '-'}</td>
+                    <td className="px-3 py-2.5 whitespace-nowrap border-b border-slate-100 border-r border-slate-100">{formatDateDDMMYYYY(customer.dob) || '-'}</td>
+                    <td className="px-3 py-2.5 whitespace-nowrap border-b border-slate-100 border-r border-slate-100">{formatDateDDMMYYYY(customer.anniversary) || '-'}</td>
                     <td className="px-3 py-2.5 whitespace-nowrap font-medium text-right border-b border-slate-100 border-r border-slate-100">{formatNumber(customer.total || 0)}</td>
                     <td className="px-3 py-2.5 whitespace-nowrap text-blue-600 text-right border-b border-slate-100 border-r border-slate-100">{formatNumber(customer.claimed || 0)}</td>
                     <td className="px-3 py-2.5 whitespace-nowrap text-right border-b border-slate-100 border-r border-slate-100">
