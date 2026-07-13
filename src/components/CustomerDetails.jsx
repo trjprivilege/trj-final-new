@@ -28,6 +28,8 @@ export default function CustomerDetails() {
     pinCode: '',
     mobile: '',
     lastSalesDate: '',
+    dob: '',
+    anniversary: ''
   });
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [customerToDelete, setCustomerToDelete] = useState(null);
@@ -55,6 +57,10 @@ export default function CustomerDetails() {
     claimStatus: {
       hasClaimed: false,
       hasEligibleClaims: false
+    },
+    events: {
+      dobMonth: '',
+      anniversaryMonth: ''
     }
   });
   
@@ -84,6 +90,8 @@ export default function CustomerDetails() {
     netWeight: row.net_weight || row["NET WEIGHT"],
     lastSalesDate: row.original_date,
     parsedDate: row.parsed_date,
+    dob: row.DOB || row.dob || '',
+    anniversary: row.ANNIVERSARY || row.anniversary || '',
     total: row.total_points || 0,
     claimed: row.claimed_points || 0,
     unclaimed: row.unclaimed_points || 0,
@@ -158,6 +166,22 @@ export default function CustomerDetails() {
       queryRef = queryRef.gte('unclaimed_points', 5);
     }
 
+    if (filters.events?.dobMonth) {
+      if (filters.events.dobMonth === 'missing') {
+        queryRef = queryRef.is('DOB', null);
+      } else {
+        queryRef = queryRef.ilike('DOB', `%-${filters.events.dobMonth}-%`);
+      }
+    }
+
+    if (filters.events?.anniversaryMonth) {
+      if (filters.events.anniversaryMonth === 'missing') {
+        queryRef = queryRef.is('ANNIVERSARY', null);
+      } else {
+        queryRef = queryRef.ilike('ANNIVERSARY', `%-${filters.events.anniversaryMonth}-%`);
+      }
+    }
+
     return queryRef;
   };
 
@@ -194,6 +218,8 @@ export default function CustomerDetails() {
       p_max_unclaimed: parseNumberFilter(filters.points.maxUnclaimed),
       p_has_claimed: filters.claimStatus.hasClaimed,
       p_has_eligible_claims: filters.claimStatus.hasEligibleClaims,
+      p_dob_month: filters.events?.dobMonth || null,
+      p_anniversary_month: filters.events?.anniversaryMonth || null,
       p_page: page,
       p_items_per_page: perPage
     };
@@ -237,7 +263,9 @@ export default function CustomerDetails() {
           total_points,
           claimed_points,
           unclaimed_points,
-          points_last_updated
+          points_last_updated,
+          DOB,
+          ANNIVERSARY
         `)
         .order('"CUSTOMER CODE"', { ascending: true })
         .range(from, from + batchSize - 1);
@@ -405,6 +433,8 @@ export default function CustomerDetails() {
       pinCode: customer.pinCode || '',
       mobile: customer.mobile || '',
       lastSalesDate: customer.lastSalesDate || '',
+      dob: customer.dob || '',
+      anniversary: customer.anniversary || '',
     });
     setIsModalOpen(true);
   };
@@ -421,6 +451,8 @@ export default function CustomerDetails() {
       pinCode: '',
       mobile: '',
       lastSalesDate: '',
+      dob: '',
+      anniversary: '',
     });
     setIsModalOpen(true);
   };
@@ -447,6 +479,18 @@ export default function CustomerDetails() {
         return;
       }
 
+      // Parse the Last Sales Date manually
+      let parsedDate = null;
+      if (formData.lastSalesDate) {
+        const parts = formData.lastSalesDate.split('/');
+        if (parts.length === 3) {
+          const day = parts[0].padStart(2, '0');
+          const month = parts[1].padStart(2, '0');
+          const year = parts[2];
+          parsedDate = `${year}-${month}-${day}`;
+        }
+      }
+
       const customerData = {
         "CUSTOMER CODE": formData.customerCode.trim(),
         "CUSTOMER NAME": formData.customerName.trim(),
@@ -455,8 +499,11 @@ export default function CustomerDetails() {
         "PLACE": formData.place.trim(),
         "PIN CODE": formData.pinCode.trim(),
         "MOBILE": formData.mobile.trim(),
-        "NET WEIGHT": isNewCustomer ? 0 : (currentCustomer?.netWeight || 0), // Preserve existing weight or set to 0 for new customers
+        "NET WEIGHT": isNewCustomer ? 0 : (currentCustomer?.netWeight || 0),
         "LAST SALES DATE": formData.lastSalesDate || null,
+        "LAST_SALES_DATE_PARSED": parsedDate,
+        "DOB": formData.dob || null,
+        "ANNIVERSARY": formData.anniversary || null,
       };
 
       if (isNewCustomer) {
@@ -465,6 +512,11 @@ export default function CustomerDetails() {
           .insert([customerData]);
 
         if (error) throw error;
+        
+        // Only reload data fully for new customers (to handle pagination sorting)
+        clearCustomerListCache();
+        setIsModalOpen(false);
+        await loadData();
       } else {
         const { error } = await supabase
           .from('sales_records')
@@ -472,14 +524,30 @@ export default function CustomerDetails() {
           .eq('"CUSTOMER CODE"', currentCustomer.code);
 
         if (error) throw error;
+        
+        // Optimistic UI update for existing customers (instant update)
+        setRows(prevRows => prevRows.map(row => {
+          if (row.code === currentCustomer.code) {
+            return {
+              ...row,
+              name: formData.customerName.trim(),
+              houseName: formData.houseName.trim(),
+              street: formData.street.trim(),
+              place: formData.place.trim(),
+              pinCode: formData.pinCode.trim(),
+              mobile: formData.mobile.trim(),
+              lastSalesDate: formData.lastSalesDate || '',
+              parsedDate: parsedDate,
+              dob: formData.dob || '',
+              anniversary: formData.anniversary || ''
+            };
+          }
+          return row;
+        }));
+        
+        clearCustomerListCache(); // Clear cache so future pagination gets fresh data
+        setIsModalOpen(false);
       }
-
-      // Refresh points after customer data change
-      clearCustomerListCache();
-      await handleRefreshPoints();
-
-      setIsModalOpen(false);
-      await loadData();
     } catch (error) {
       console.error('Error saving customer:', error);
       setErrorMessage('Failed to save customer: ' + error.message);
@@ -745,7 +813,7 @@ export default function CustomerDetails() {
                 />
               </div>
               
-                <div className="md:col-span-2">
+                <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                     Last Sales Date (DD/MM/YYYY)
                 </label>
@@ -756,6 +824,32 @@ export default function CustomerDetails() {
                   onChange={handleInputChange}
                     placeholder="31/12/2023"
                     className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                </div>
+
+                <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Date of Birth
+                </label>
+                <input
+                  type="date"
+                  name="dob"
+                  value={formData.dob}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                </div>
+
+                <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Wedding Anniversary
+                </label>
+                <input
+                  type="date"
+                  name="anniversary"
+                  value={formData.anniversary}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 </div>
               </div>

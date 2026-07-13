@@ -141,6 +141,29 @@ export default function CustomerFilters({
     });
   }
 
+  const getMonthName = (monthStr) => {
+    if (monthStr === 'missing') return 'Missing Data';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const index = parseInt(monthStr, 10) - 1;
+    return months[index] || monthStr;
+  };
+
+  if (filters.events?.dobMonth) {
+    activeChips.push({
+      key: 'dob-month',
+      label: `DOB: ${getMonthName(filters.events.dobMonth)}`,
+      onRemove: () => clearSingleFilter('events', 'dobMonth', '')
+    });
+  }
+
+  if (filters.events?.anniversaryMonth) {
+    activeChips.push({
+      key: 'anniversary-month',
+      label: `Anniversary: ${getMonthName(filters.events.anniversaryMonth)}`,
+      onRemove: () => clearSingleFilter('events', 'anniversaryMonth', '')
+    });
+  }
+
   const activeFilterCount = activeChips.length;
   const hasActiveFiltersOrSearch = activeFilterCount > 0;
 
@@ -226,7 +249,7 @@ export default function CustomerFilters({
         aria-hidden={!isFilterPanelOpen}
       >
         <div className="bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50 p-5 rounded-xl border border-blue-100 space-y-5 transform transition-transform duration-300 ease-out shadow-sm">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
             <div className="rounded-xl border border-cyan-200 bg-gradient-to-br from-cyan-50 to-white p-4 space-y-3 shadow-sm">
               <div className="flex items-center gap-2">
                 <Calendar size={16} className="text-cyan-700" />
@@ -408,6 +431,64 @@ export default function CustomerFilters({
                     onChange={(e) => handleFilterChange('points', 'maxUnclaimed', e.target.value)}
                     className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-purple-200 bg-gradient-to-br from-purple-50 to-white p-4 space-y-3 shadow-sm">
+              <div className="flex items-center gap-2">
+                <Calendar size={16} className="text-purple-700" />
+                <h4 className="text-sm font-semibold text-gray-800">Events (Months)</h4>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1" htmlFor="filter-dob-month">Birthday</label>
+                  <select
+                    id="filter-dob-month"
+                    value={filters.events?.dobMonth || ''}
+                    onChange={(e) => handleFilterChange('events', 'dobMonth', e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    <option value="">Any</option>
+                    <option value="01">January</option>
+                    <option value="02">February</option>
+                    <option value="03">March</option>
+                    <option value="04">April</option>
+                    <option value="05">May</option>
+                    <option value="06">June</option>
+                    <option value="07">July</option>
+                    <option value="08">August</option>
+                    <option value="09">September</option>
+                    <option value="10">October</option>
+                    <option value="11">November</option>
+                    <option value="12">December</option>
+                    <option value="missing">Missing Data</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1" htmlFor="filter-anniversary-month">Anniversary</label>
+                  <select
+                    id="filter-anniversary-month"
+                    value={filters.events?.anniversaryMonth || ''}
+                    onChange={(e) => handleFilterChange('events', 'anniversaryMonth', e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    <option value="">Any</option>
+                    <option value="01">January</option>
+                    <option value="02">February</option>
+                    <option value="03">March</option>
+                    <option value="04">April</option>
+                    <option value="05">May</option>
+                    <option value="06">June</option>
+                    <option value="07">July</option>
+                    <option value="08">August</option>
+                    <option value="09">September</option>
+                    <option value="10">October</option>
+                    <option value="11">November</option>
+                    <option value="12">December</option>
+                    <option value="missing">Missing Data</option>
+                  </select>
                 </div>
               </div>
             </div>
