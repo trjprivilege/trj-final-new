@@ -135,17 +135,7 @@ export default function CustomerTable({
   // Function to print the customer list (now exports PDF directly)
   const printCustomerList = async () => {
     let maxLimit = null;
-    const limitWarningCount = 5000;
     
-    if (totalFilteredCount > limitWarningCount) {
-      const proceed = window.confirm(
-        `WARNING: Generating a PDF for ${formatNumber(totalFilteredCount)} records will freeze your browser for several minutes and may cause an "Out of Memory" crash.\n\n` +
-        `Are you absolutely sure you want to try generating this massive PDF?\n` +
-        `(We strongly recommend using 'Export CSV' for large datasets.)`
-      );
-      if (!proceed) return;
-    }
-
     abortFetchRef.current = false;
     setPreparingAction('pdf');
     setIsRenderingPDF(false);
