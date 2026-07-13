@@ -2,6 +2,8 @@ import React, { useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Edit, Trash, Award, ChevronLeft, ChevronRight, FileText, Download, ChevronsLeft, ChevronsRight, History } from 'lucide-react';
 import Papa from 'papaparse';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import ClaimHistoryDialog from './ClaimHistoryDialog';
 
 const pageSizeOptions = [10, 25, 50, 100, 500, 1000];
@@ -28,9 +30,8 @@ export default function CustomerTable({
   const [printStyle, setPrintStyle] = useState('table');
   const [preparingAction, setPreparingAction] = useState(null);
   const [viewMode, setViewMode] = useState('table');
-  const [isPrinting, setIsPrinting] = useState(false);
-  const [printData, setPrintData] = useState(null);
   const [loadingProgress, setLoadingProgress] = useState(0);
+  const [isRenderingPDF, setIsRenderingPDF] = useState(false);
   const [loadedCount, setLoadedCount] = useState(0);
   const abortFetchRef = useRef(false);
 
@@ -57,34 +58,59 @@ export default function CustomerTable({
   };
 
   // Use full filtered dataset for printing.
-  const getRowsForPrintReport = async (onProgress) => {
+  const getRowsForPrintReport = async (onProgress, maxLimit = null) => {
     if (!fetchAllFilteredRows || filtered.length >= totalFilteredCount) {
-      if (onProgress) onProgress(filtered.length);
-      return filtered;
+      const result = maxLimit ? filtered.slice(0, maxLimit) : filtered;
+      if (onProgress) onProgress(result.length);
+      return result;
     }
-    return fetchAllFilteredRows(onProgress, abortFetchRef);
+    return fetchAllFilteredRows(onProgress, abortFetchRef, maxLimit);
   };
 
-  // CSV export should match what is currently visible in the table page.
-  const exportToCSV = () => {
+  // CSV export should download all filtered rows, just like the print report.
+  const exportToCSV = async () => {
     abortFetchRef.current = false;
     setPreparingAction('csv');
+    setLoadingProgress(0);
+    setLoadedCount(0);
     try {
-      const csvData = filtered.map(customer => ({
-        'Customer Code': customer.code,
-        'Customer Name': customer.name,
-        'House Name': customer.houseName,
-        'Street': customer.street,
-        'Place': customer.place,
-        'PIN Code': customer.pinCode,
-        'Mobile': customer.mobile,
-        'Last Sales Date': customer.lastSalesDate,
-        'Total Points': customer.total,
-        'Claimed Points': customer.claimed,
-        'Unclaimed Points': customer.unclaimed,
-        'Max Claimable (Multiple of 5)': getMaxClaimablePoints ? getMaxClaimablePoints(customer.unclaimed) : Math.floor(customer.unclaimed / 5) * 5,
-        'Last Updated': customer.lastUpdated
-      }));
+      const allData = await getRowsForPrintReport((count) => {
+        setLoadedCount(count);
+        if (totalFilteredCount > 0) {
+          setLoadingProgress(Math.min(100, Math.round((count / totalFilteredCount) * 100)));
+        }
+      }, null);
+
+      const csvData = allData.map(customer => {
+        // Format the ISO date into a readable format (e.g., "04 Mar 2026, 03:44 PM")
+        let formattedLastUpdated = 'N/A';
+        if (customer.lastUpdated) {
+          try {
+            formattedLastUpdated = new Intl.DateTimeFormat('en-IN', {
+              day: '2-digit', month: 'short', year: 'numeric',
+              hour: '2-digit', minute: '2-digit', hour12: true
+            }).format(new Date(customer.lastUpdated));
+          } catch (e) {
+            formattedLastUpdated = customer.lastUpdated; // fallback
+          }
+        }
+
+        return {
+          'Customer Code': customer.code || '',
+          'Customer Name': customer.name || '',
+          'House Name': customer.houseName || '',
+          'Street': customer.street || '',
+          'Place': customer.place || '',
+          'PIN Code': customer.pinCode || '',
+          'Mobile': customer.mobile || '',
+          'Last Sales Date': customer.lastSalesDate || '',
+          'Total Points': customer.total || 0,
+          'Claimed Points': customer.claimed || 0,
+          'Unclaimed Points': customer.unclaimed || 0,
+          'Claimable Points': getMaxClaimablePoints ? getMaxClaimablePoints(customer.unclaimed) : Math.floor(customer.unclaimed / 5) * 5,
+          'Last Updated': formattedLastUpdated
+        };
+      });
 
       const csv = Papa.unparse(csvData);
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -95,39 +121,90 @@ export default function CustomerTable({
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+    } catch (error) {
+      if (error.message === 'Export cancelled by user') {
+        console.log("CSV export cancelled by user");
+      } else {
+        console.error("CSV export failed:", error);
+      }
     } finally {
       setPreparingAction(null);
     }
   };
 
-  // Function to print the customer list
+  // Function to print the customer list (now exports PDF directly)
   const printCustomerList = async () => {
+    let maxLimit = null;
+    const limitWarningCount = 5000;
+    
+    if (totalFilteredCount > limitWarningCount) {
+      const proceed = window.confirm(
+        `WARNING: Generating a PDF for ${formatNumber(totalFilteredCount)} records will freeze your browser for several minutes and may cause an "Out of Memory" crash.\n\n` +
+        `Are you absolutely sure you want to try generating this massive PDF?\n` +
+        `(We strongly recommend using 'Export CSV' for large datasets.)`
+      );
+      if (!proceed) return;
+    }
+
     abortFetchRef.current = false;
-    setPreparingAction('print');
+    setPreparingAction('pdf');
+    setIsRenderingPDF(false);
     setLoadingProgress(0);
     setLoadedCount(0);
     try {
       const data = await getRowsForPrintReport((count) => {
         setLoadedCount(count);
         if (totalFilteredCount > 0) {
-          setLoadingProgress(Math.min(100, Math.round((count / totalFilteredCount) * 100)));
+          const target = maxLimit ? Math.min(totalFilteredCount, maxLimit) : totalFilteredCount;
+          setLoadingProgress(Math.min(100, Math.round((count / target) * 100)));
         }
+      }, maxLimit);
+      
+      // Data is fetched, now update UI to show we are rendering the PDF
+      setIsRenderingPDF(true);
+      
+      // Wait a tiny bit so React can render the "Rendering PDF..." message before the main thread freezes
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      const doc = new jsPDF({ orientation: 'landscape' });
+      const tableColumn = [
+        "Code", "Name", "Place", "Mobile", "Total Pts", "Claimed", "Unclaimed", "Max Claimable", "Last Sale Date"
+      ];
+      
+      const tableRows = data.map(c => [
+        c.code || '',
+        c.name || '-',
+        c.place || '-',
+        c.mobile || '-',
+        formatNumber(c.total),
+        formatNumber(c.claimed),
+        formatNumber(c.unclaimed),
+        formatNumber(getMaxClaimablePointsFallback(c.unclaimed)),
+        c.lastSalesDate || '-'
+      ]);
+
+      doc.text("Customer Loyalty Program Report", 14, 15);
+      doc.setFontSize(10);
+      doc.text(`Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`, 14, 22);
+
+      autoTable(doc, {
+        head: [tableColumn],
+        body: tableRows,
+        startY: 28,
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [37, 99, 235] }
       });
-      setPrintData(data);
-      setIsPrinting(true);
-      setTimeout(() => {
-        window.print();
-        setIsPrinting(false);
-        setPrintData(null);
-      }, 500);
+
+      doc.save(`customer_loyalty_report_${new Date().toISOString().split('T')[0]}.pdf`);
     } catch (error) {
       if (error.message === 'Export cancelled by user') {
-        console.log("Print cancelled by user");
+        console.log("PDF export cancelled by user");
       } else {
-        console.error("Print failed:", error);
+        console.error("PDF export failed:", error);
       }
     } finally {
       setPreparingAction(null);
+      setIsRenderingPDF(false);
     }
   };
 
@@ -160,10 +237,10 @@ export default function CustomerTable({
   return (
     <>
       {/* Full screen loader overlay */}
-      {(isPreparingReport || isPrinting) && createPortal(
+      {isPreparingReport && createPortal(
         <div className="fixed inset-0 bg-slate-900/50 z-[9999] flex flex-col items-center justify-center p-4 print:hidden backdrop-blur-md transition-all duration-300">
           <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full border border-gray-100 transform transition-all scale-100 relative">
-            {preparingAction === 'print' && !isPrinting && (
+            {preparingAction && (
               <button 
                 onClick={cancelPreparation}
                 className="absolute top-4 right-4 text-gray-400 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-full transition-colors"
@@ -173,7 +250,7 @@ export default function CustomerTable({
               </button>
             )}
             <div className="relative mb-8 mt-2">
-              {preparingAction === 'print' && totalFilteredCount > 0 && !isPrinting ? (
+              {preparingAction && totalFilteredCount > 0 ? (
                 <div className="relative w-32 h-32 flex items-center justify-center">
                   <svg className="transform -rotate-90 w-32 h-32 drop-shadow-md" viewBox="0 0 100 100">
                     <circle cx="50" cy="50" r="44" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-blue-50" />
@@ -199,16 +276,14 @@ export default function CustomerTable({
               )}
             </div>
             <h2 className="text-2xl font-bold text-gray-800 mb-3 text-center tracking-tight">
-              {preparingAction === 'csv' ? 'Exporting CSV...' : isPrinting ? 'Opening Print Dialog' : 'Preparing Print...'}
+              {preparingAction === 'csv' ? 'Exporting CSV...' : (isRenderingPDF ? 'Building PDF Document...' : 'Fetching Data...')}
             </h2>
             <p className="text-gray-500 text-sm text-center font-medium leading-relaxed px-4">
               {preparingAction === 'csv' 
                 ? 'Gathering and formatting your data' 
-                : isPrinting 
-                  ? 'Your document is ready to print!' 
-                  : 'Fetching data and formatting layout. This might take a moment.'}
+                : (isRenderingPDF ? 'This may freeze your browser for a few moments.' : 'Fetching data from server. This might take a moment.')}
             </p>
-            {preparingAction === 'print' && !isPrinting && totalFilteredCount > 0 && (
+            {preparingAction && totalFilteredCount > 0 && !isRenderingPDF && (
               <div className="w-full mt-6 bg-blue-50/80 text-blue-700 py-3 px-4 rounded-xl flex items-center justify-center gap-3 border border-blue-100 shadow-sm">
                 <svg className="w-5 h-5 animate-pulse text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
                 <span className="text-sm font-bold tracking-wide">
@@ -216,7 +291,7 @@ export default function CustomerTable({
                 </span>
               </div>
             )}
-            {preparingAction === 'print' && !isPrinting && (
+            {preparingAction && !isRenderingPDF && (
               <button
                 onClick={cancelPreparation}
                 className="mt-6 text-sm font-semibold text-gray-400 hover:text-gray-600 underline underline-offset-4 transition-colors"
@@ -548,86 +623,6 @@ export default function CustomerTable({
         isOpen={claimHistoryDialog.isOpen}
         onClose={closeClaimHistoryDialog}
       />
-      {/* Hidden Print Container */}
-      {isPrinting && printData && createPortal(
-        <div id="print-root" className="hidden print:block w-full bg-white text-black p-8" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-          
-          <div className="text-center mb-6 border-b-2 border-black pb-4">
-            <h1 className="text-2xl font-bold uppercase tracking-wider mb-2">Customer Loyalty Program Report</h1>
-            <p className="text-sm">Generated on {new Date().toLocaleDateString()} at {new Date().toLocaleTimeString()}</p>
-          </div>
-          
-          <div className="mb-6 flex justify-between text-sm max-w-4xl">
-            <div>
-              <span className="font-bold">Total Customers:</span> {formatNumber(totalFilteredCount)}
-            </div>
-            <div>
-              <span className="font-bold">Eligible for Claims:</span> {formatNumber(eligibleCustomersCount)}
-            </div>
-            <div>
-              <span className="font-bold">Total Points:</span> {formatNumber(totalStatistics.totalPoints)}
-            </div>
-            <div>
-              <span className="font-bold">Total Available:</span> {formatNumber(totalStatistics.totalUnclaimed)}
-            </div>
-          </div>
-
-          {viewMode === 'table' ? (
-            <table className="w-full text-left text-xs border-collapse border border-black">
-              <thead>
-                <tr className="bg-gray-100">
-                  <th className="border border-black p-2 font-bold">Code</th>
-                  <th className="border border-black p-2 font-bold">Name</th>
-                  <th className="border border-black p-2 font-bold">Place</th>
-                  <th className="border border-black p-2 font-bold">Mobile</th>
-                  <th className="border border-black p-2 font-bold text-right">Total Points</th>
-                  <th className="border border-black p-2 font-bold text-right">Claimed</th>
-                  <th className="border border-black p-2 font-bold text-right">Unclaimed</th>
-                  <th className="border border-black p-2 font-bold text-right">Max Claimable</th>
-                  <th className="border border-black p-2 font-bold">Last Sales Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {printData.map((c, i) => (
-                  <tr key={c.code || i} className="break-inside-avoid" style={{ pageBreakInside: 'avoid', breakInside: 'avoid' }}>
-                    <td className="border border-black p-2">{c.code}</td>
-                    <td className="border border-black p-2">{c.name || '-'}</td>
-                    <td className="border border-black p-2">{c.place || '-'}</td>
-                    <td className="border border-black p-2">{c.mobile || '-'}</td>
-                    <td className="border border-black p-2 text-right">{formatNumber(c.total)}</td>
-                    <td className="border border-black p-2 text-right">{formatNumber(c.claimed)}</td>
-                    <td className="border border-black p-2 text-right font-bold">{formatNumber(c.unclaimed)}</td>
-                    <td className="border border-black p-2 text-right">{formatNumber(getMaxClaimablePointsFallback(c.unclaimed))}</td>
-                    <td className="border border-black p-2">{c.lastSalesDate || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="block w-full">
-              {printData.map((c, i) => (
-                <div key={c.code || i} className="inline-block w-[48%] lg:w-[31%] align-top m-[1%] border border-black p-4 text-xs" style={{ pageBreakInside: 'avoid', breakInside: 'avoid' }}>
-                  <div className="flex justify-between border-b border-gray-400 pb-2 mb-2">
-                    <span className="font-bold text-sm">{c.name || 'Unnamed Customer'}</span>
-                    <span className="font-mono">{c.code}</span>
-                  </div>
-                  <div className="space-y-1 mb-3">
-                    <div><span className="font-bold mr-1">House Name:</span> {c.houseName || '-'}</div>
-                    <div><span className="font-bold mr-1">Street Name:</span> {c.street || '-'}</div>
-                    <div><span className="font-bold mr-1">Place:</span> {c.place || '-'}</div>
-                    <div><span className="font-bold mr-1">Pin Code:</span> {c.pinCode || '-'}</div>
-                    <div><span className="font-bold mr-1">Mobile:</span> {c.mobile || '-'}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          
-          <div className="mt-8 text-xs text-center border-t border-black pt-4">
-            <p>Report generated from Customer Loyalty Management System</p>
-          </div>
-        </div>, document.body
-      )}
     </>
   );
 }
