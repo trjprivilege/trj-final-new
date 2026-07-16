@@ -271,19 +271,92 @@ export default function UploadData() {
             const record = {
               "CUSTOMER CODE": row["CUSTOMER CODE"] || row["Customer Code"] || '',
               "CUSTOMER NAME": row["CUSTOMER NAME"] || row["NAME1 & 2"] || row["Customer Name"] || '',
-              "HOUSE NAME": row["HOUSE NAME"] || row["House Name"] || '',
-              "STREET": row["STREET"] || row["Street"] || '',
-              "PLACE": row["PLACE"] || row["Place"] || '',
+              "HOUSE NAME": row["HOUSE NAME"] || row["House Name"] || row["ADDRESS1"] || row["Address 1"] || row["ADDRESS 1"] || '',
+              "STREET": row["STREET"] || row["Street"] || row["ADDRESS2"] || row["Address 2"] || row["ADDRESS 2"] || '',
+              "PLACE": row["PLACE"] || row["Place"] || row["ADDRESS3"] || row["Address 3"] || row["ADDRESS 3"] || '',
               "PIN CODE": row["PIN CODE"] || row["Pin Code"] || '',
-              "MOBILE": row["MOBILE"] || row["Mobile"] || '',
+              "MOBILE": row["MOBILE"] || row["Mobile"] || row["MOBILE NUMBER"] || row["Mobile Number"] || '',
               "NET WEIGHT": (() => {
-                const weight = row["NET WEIGHT"] || row["Net Weight"];
+                const weight = row["NET WEIGHT"] || row["Net Weight"] || row["TOTAL WEIGHT"] || row["Total Weight"];
                 if (weight === null || weight === undefined || weight === '') return 0;
                 const parsed = parseFloat(weight);
                 return isNaN(parsed) ? 0 : parsed;
               })(),
               "LAST SALES DATE": row["LAST SALES DATE"] || row["Last Sales Date"] || '',
             };
+
+            // Helper to parse dates robustly for PostgreSQL
+            const parseDateString = (dateStr) => {
+              if (!dateStr || typeof dateStr !== 'string') return null;
+              const cleanStr = dateStr.trim();
+              if (!cleanStr) return null;
+
+              try {
+                let day, month, year;
+                
+                // Handle formats with slashes or dashes
+                if (cleanStr.includes('/') || cleanStr.includes('-') || cleanStr.includes('.')) {
+                  const delimiter = cleanStr.includes('/') ? '/' : cleanStr.includes('-') ? '-' : '.';
+                  const parts = cleanStr.split(delimiter);
+                  
+                  if (parts.length === 3) {
+                    // YYYY-MM-DD
+                    if (parts[0].length === 4) {
+                      year = parts[0];
+                      month = parts[1];
+                      day = parts[2];
+                    } else {
+                      // DD/MM/YYYY or MM/DD/YYYY
+                      // If middle part > 12, it must be day (American format MM/DD/YYYY)
+                      if (parseInt(parts[1], 10) > 12) {
+                        month = parts[0];
+                        day = parts[1];
+                      } else if (parseInt(parts[0], 10) > 12) {
+                        // First part > 12, must be day (Indian format DD/MM/YYYY)
+                        day = parts[0];
+                        month = parts[1];
+                      } else {
+                        // Default to DD/MM/YYYY
+                        day = parts[0];
+                        month = parts[1];
+                      }
+                      
+                      year = parts[2];
+                      if (year.length === 2) {
+                        year = parseInt(year, 10) > 50 ? `19${year}` : `20${year}`;
+                      }
+                    }
+                    
+                    const formatted = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+                    // Validate if it forms a real date (e.g. reject 2025-02-30)
+                    if (!isNaN(new Date(formatted).getTime())) {
+                      return formatted;
+                    }
+                  }
+                }
+                
+                // If standard JS can parse it, format it to YYYY-MM-DD
+                const jsDate = new Date(cleanStr);
+                if (!isNaN(jsDate.getTime())) {
+                   return jsDate.toISOString().split('T')[0];
+                }
+                
+                // If totally unparseable, return null to avoid crashing the DB
+                return null;
+              } catch (e) {
+                return null;
+              }
+            };
+
+            // Only update DOB and Anniversary if the columns actually exist in the CSV
+            if ("DOB" in row || "Date of Birth" in row || "Date Of Birth" in row || "dob" in row) {
+              const rawDob = row["DOB"] || row["Date of Birth"] || row["Date Of Birth"] || row["dob"];
+              record["DOB"] = parseDateString(rawDob);
+            }
+            if ("ANNIVERSARY" in row || "Anniversary" in row || "anniversary" in row || "Wedding Anniversary" in row || "WEDDING ANNIVERSARY" in row) {
+              const rawAnniversary = row["ANNIVERSARY"] || row["Anniversary"] || row["anniversary"] || row["Wedding Anniversary"] || row["WEDDING ANNIVERSARY"];
+              record["ANNIVERSARY"] = parseDateString(rawAnniversary);
+            }
             
             records.push(record);
             
@@ -300,16 +373,28 @@ export default function UploadData() {
         console.log('Successfully mapped', records.length, 'records');
 
         try {
-          // Step 1: Upload to sales_records table in batches to avoid database stack overflow
-          const BATCH_SIZE = 20; // Process 20 records at a time to avoid Supabase recursion limits
-          const totalBatches = Math.ceil(records.length / BATCH_SIZE);
+          // PostgreSQL cannot update the same row twice in a single upsert batch.
+          // We must deduplicate the records by CUSTOMER CODE, keeping the last occurrence.
+          const uniqueRecordsMap = new Map();
+          for (const record of records) {
+            // Only add if there is a valid customer code
+            if (record["CUSTOMER CODE"]) {
+              uniqueRecordsMap.set(record["CUSTOMER CODE"], record);
+            }
+          }
+          const uniqueRecords = Array.from(uniqueRecordsMap.values());
+          console.log(`Deduplicated to ${uniqueRecords.length} unique records`);
+
+          // Step 1: Upload to sales_records table in batches
+          const BATCH_SIZE = 2000; // Increased to 2000 for significantly faster uploads
+          const totalBatches = Math.ceil(uniqueRecords.length / BATCH_SIZE);
           
-          console.log(`Uploading ${records.length} records in ${totalBatches} batches of ${BATCH_SIZE}`);
+          console.log(`Uploading ${uniqueRecords.length} records in ${totalBatches} batches of ${BATCH_SIZE}`);
           
           for (let i = 0; i < totalBatches; i++) {
             const start = i * BATCH_SIZE;
-            const end = Math.min(start + BATCH_SIZE, records.length);
-            const batch = records.slice(start, end);
+            const end = Math.min(start + BATCH_SIZE, uniqueRecords.length);
+            const batch = uniqueRecords.slice(start, end);
             
             console.log(`Uploading batch ${i + 1}/${totalBatches} (${batch.length} records)`);
             
@@ -327,9 +412,9 @@ export default function UploadData() {
             
             console.log(`Batch ${i + 1} completed successfully`);
             
-            // Small delay between batches to prevent overwhelming the database
+            // Tiny 50ms delay just to let the browser breathe
             if (i < totalBatches - 1) {
-              await new Promise(resolve => setTimeout(resolve, 200));
+              await new Promise(resolve => setTimeout(resolve, 50));
             }
           }
           
@@ -347,7 +432,7 @@ export default function UploadData() {
 
           // Step 4: Save upload record with Indian timezone
           const downloadDateForSave = dataDownloadDate ? dataDownloadDate : null;
-          const uploadRecordId = await saveUploadRecord(file.name, records.length, downloadDateForSave);
+          const uploadRecordId = await saveUploadRecord(file.name, uniqueRecords.length, downloadDateForSave);
           if (uploadRecordId) {
             setCurrentRecordId(uploadRecordId);
           }
