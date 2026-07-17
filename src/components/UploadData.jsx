@@ -254,6 +254,9 @@ export default function UploadData() {
           return;
         }
         
+        // Stop the fake progress bar immediately so it doesn't fight the real one
+        clearInterval(progressInterval);
+        
         // Map the CSV data to the new schema field names with error handling
         console.log('Starting to map CSV data, total rows:', data.length);
         const records = [];
@@ -423,9 +426,9 @@ export default function UploadData() {
           setUploadProgress(90);
           setIsProcessingPoints(true);
 
-          // Step 2: Refresh customer points (temporarily disabled due to timeout)
-          // const pointsResult = await refreshCustomerPoints();
-          console.log('Points calculation skipped - will run separately to avoid timeout');
+          // Step 2: Points are now calculated instantly via Database Triggers!
+          // We no longer need to call refreshCustomerPoints() at the end, preventing timeouts completely.
+          console.log('Points were calculated automatically during the upload via database triggers.');
           
           // Step 3: Update parsed dates
           const datesResult = await updateParsedDates();
