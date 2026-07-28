@@ -167,10 +167,88 @@ export default function CustomerTable({
       // Wait a tiny bit so React can render the "Rendering PDF..." message before the main thread freezes
       await new Promise(resolve => setTimeout(resolve, 150));
 
-      const doc = new jsPDF({ orientation: 'landscape' });
-      const tableColumn = [
-        "Code", "Name", "Place", "Mobile", "DOB", "Anniv.", "Total Pts", "Claimed", "Unclaimed", "Max Claimable", "Last Sale Date"
-      ];
+      if (viewMode === 'stacked') {
+        // Stacked View Print (Grid Layout 5 rows x 2 columns)
+        const doc = new jsPDF({ orientation: 'portrait' });
+        
+        doc.text("Customer Details Report", 14, 15);
+        doc.setFontSize(10);
+        doc.text(`Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`, 14, 22);
+
+        const cardsPerPage = 10; // 5 rows * 2 columns
+        const colCount = 2;
+        
+        // Margins and dimensions for A4 (210 x 297mm)
+        const startX = 14;
+        const startY = 30;
+        const cardWidth = 88;
+        const cardHeight = 48; // Reduced height to fit 5 rows tightly
+        const gapX = 6;
+        const gapY = 4.5;
+
+        for (let i = 0; i < data.length; i++) {
+          const c = data[i];
+          const pageIndex = Math.floor(i / cardsPerPage);
+          const cardIndex = i % cardsPerPage;
+          
+          if (i > 0 && cardIndex === 0) {
+            doc.addPage();
+          }
+          
+          const col = cardIndex % colCount;
+          const row = Math.floor(cardIndex / colCount);
+          
+          const x = startX + col * (cardWidth + gapX);
+          const y = startY + row * (cardHeight + gapY);
+          
+          // Draw card border
+          doc.setDrawColor(200, 200, 200);
+          doc.rect(x, y, cardWidth, cardHeight);
+          
+          let currentY = y + 8; // Start slightly higher
+          const leftMargin = x + 6;
+          
+          // Name and ID
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(11); 
+          doc.text(`${c.name || '-'} (${c.code || '-'})`, leftMargin, currentY);
+          currentY += 6;
+          
+          // Address details
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(10);
+          if (c.houseName) {
+             doc.text(c.houseName, leftMargin, currentY);
+             currentY += 5.5;
+          }
+          if (c.street) {
+             doc.text(c.street, leftMargin, currentY);
+             currentY += 5.5;
+          }
+          const placeStr = [c.place, c.pinCode].filter(Boolean).join(' - ');
+          if (placeStr) {
+             doc.text(placeStr, leftMargin, currentY);
+             currentY += 5.5;
+          }
+          
+          // Mobile
+          doc.text(`Mob: ${c.mobile || '-'}`, leftMargin, currentY);
+          currentY += 7;
+          
+          // Dates
+          const dobStr = c.dob ? formatDateDDMMYYYY(c.dob) : '-';
+          const annivStr = c.anniversary ? formatDateDDMMYYYY(c.anniversary) : '-';
+          doc.setFontSize(9);
+          doc.text(`DOB: ${dobStr}  ,  WED: ${annivStr}`, leftMargin, currentY);
+        }
+        
+        doc.save(`customer_labels_${new Date().toISOString().split('T')[0]}.pdf`);
+      } else {
+        // Table View Print
+        const doc = new jsPDF({ orientation: 'landscape' });
+        const tableColumn = [
+          "Code", "Name", "Place", "Mobile", "DOB", "Anniv.", "Total Pts", "Claimed", "Unclaimed", "Max Claimable", "Last Sale Date"
+        ];
       
       const tableRows = data.map(c => [
         c.code || '',
@@ -186,19 +264,20 @@ export default function CustomerTable({
         c.lastSalesDate || '-'
       ]);
 
-      doc.text("Customer Loyalty Program Report", 14, 15);
-      doc.setFontSize(10);
-      doc.text(`Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`, 14, 22);
+        doc.text("Customer Loyalty Program Report", 14, 15);
+        doc.setFontSize(10);
+        doc.text(`Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`, 14, 22);
 
-      autoTable(doc, {
-        head: [tableColumn],
-        body: tableRows,
-        startY: 28,
-        styles: { fontSize: 8 },
-        headStyles: { fillColor: [37, 99, 235] }
-      });
+        autoTable(doc, {
+          head: [tableColumn],
+          body: tableRows,
+          startY: 28,
+          styles: { fontSize: 8 },
+          headStyles: { fillColor: [37, 99, 235] }
+        });
 
-      doc.save(`customer_loyalty_report_${new Date().toISOString().split('T')[0]}.pdf`);
+        doc.save(`customer_loyalty_report_${new Date().toISOString().split('T')[0]}.pdf`);
+      }
     } catch (error) {
       if (error.message === 'Export cancelled by user') {
         console.log("PDF export cancelled by user");
