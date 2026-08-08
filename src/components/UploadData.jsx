@@ -67,6 +67,7 @@ export default function UploadData() {
       header: true,
       preview: 10,
       skipEmptyLines: true,
+      transformHeader: header => header.trim(),
       complete: ({ data }) => setPreviewData(data),
     });
   };
@@ -247,6 +248,7 @@ export default function UploadData() {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
+      transformHeader: header => header.trim(),
       complete: async ({ data, errors }) => {
         if (errors.length) {
           clearInterval(progressInterval);
